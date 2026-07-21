@@ -70,6 +70,8 @@ export default function DeviceDetail() {
   const heartbeatRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const reconnectRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const manualCloseRef = useRef(false);
+  // 重连尝试次数（指数退避：1s, 2s, 4s, ... 上限 30s）
+  const reconnectAttemptsRef = useRef(0);
 
   // 历史截图分页
   const [screenshots, setScreenshots] = useState<Screenshot[]>([]);
@@ -200,6 +202,8 @@ export default function DeviceDetail() {
 
     ws.onopen = () => {
       setWsConnected(true);
+      // 连接成功后重置重连尝试次数
+      reconnectAttemptsRef.current = 0;
       setScreenshotCount(0);
       message.success('实时连接已建立');
       // 心跳保活：每 25 秒发送 ping，防止中间件超时断开
@@ -247,11 +251,15 @@ export default function DeviceDetail() {
         clearInterval(heartbeatRef.current);
         heartbeatRef.current = null;
       }
-      // 非用户主动关闭时自动重连（3 秒后）
+      // 非用户主动关闭时自动重连（指数退避 + 随机抖动，避免惊群）
       if (!manualCloseRef.current) {
+        const attempt = reconnectAttemptsRef.current++;
+        // 延迟 = min(30s, 1s * 2^attempt) + 0~500ms 抖动
+        const delay = Math.min(30_000, 1000 * Math.pow(2, attempt)) +
+          Math.floor(Math.random() * 500);
         reconnectRef.current = setTimeout(() => {
           connectWs();
-        }, 3_000);
+        }, delay);
       }
     };
   };
