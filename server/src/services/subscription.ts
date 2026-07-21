@@ -20,10 +20,10 @@ export class SubscriptionService {
     }
     this.subscribers.get(deviceId)!.add(ws);
 
-    // 连接关闭时自动清理，避免内存泄漏
-    ws.on('close', () => {
-      this.unsubscribe(deviceId, ws);
-    });
+    // 连接关闭或异常时自动清理，避免内存泄漏
+    const cleanup = () => this.unsubscribe(deviceId, ws);
+    ws.on('close', cleanup);
+    ws.on('error', cleanup);
   }
 
   /**
@@ -43,6 +43,10 @@ export class SubscriptionService {
 
   /**
    * 通知所有订阅该设备的连接：有新截图上传
+   *
+   * 实现背压控制：当某连接 bufferedAmount 超过阈值时视为慢消费者，
+   * 关闭连接并取消订阅，避免用户态内存无限堆积导致 OOM。
+   *
    * @param deviceId 设备 ID
    * @param screenshotUrl 截图访问 URL
    * @param monitorIndex 显示器索引
@@ -63,16 +67,28 @@ export class SubscriptionService {
       timestamp: new Date().toISOString(),
     });
 
+    // 慢消费者阈值：缓冲超过 1MB 视为消费不及，关闭连接避免内存堆积
+    const MAX_BUFFERED = 1024 * 1024;
+
     // 向所有处于 OPEN 状态的连接推送消息
     for (const ws of set) {
       // WebSocket.OPEN === 1
-      if (ws.readyState === 1) {
+      if (ws.readyState !== 1) continue;
+      // 背压检测：慢消费者关闭连接
+      if (ws.bufferedAmount > MAX_BUFFERED) {
         try {
-          ws.send(message);
+          ws.close(1011, 'slow consumer');
         } catch {
-          // 单个连接发送失败时忽略，不影响其他连接
-          this.unsubscribe(deviceId, ws);
+          // ignore
         }
+        this.unsubscribe(deviceId, ws);
+        continue;
+      }
+      try {
+        ws.send(message);
+      } catch {
+        // 单个连接发送失败时忽略，不影响其他连接
+        this.unsubscribe(deviceId, ws);
       }
     }
   }

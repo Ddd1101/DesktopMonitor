@@ -15,7 +15,7 @@ export default async function monitorWsRoutes(app: FastifyInstance): Promise<voi
     (socket: WebSocket, request) => {
       const { deviceId } = request.params as { deviceId: string };
 
-      // 注册订阅
+      // 注册订阅（subscriptionService 内部已监听 close/error 自动清理）
       subscriptionService.subscribe(deviceId, socket);
 
       // 接收消息：仅处理简单的 ping/pong 心跳，其他消息忽略
@@ -24,11 +24,6 @@ export default async function monitorWsRoutes(app: FastifyInstance): Promise<voi
         if (text === 'ping') {
           socket.send('pong');
         }
-      });
-
-      // 连接关闭时取消订阅（subscriptionService 内部也会自动清理，这里冗余调用以保证及时性）
-      socket.on('close', () => {
-        subscriptionService.unsubscribe(deviceId, socket);
       });
     },
   );
