@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify';
+import dayjs from 'dayjs';
 import { db } from '../../db/index.js';
 import { verifyAdminAuth } from '../../utils/adminAuth.js';
 
@@ -45,22 +46,25 @@ export default async function adminEventsRoutes(app: FastifyInstance): Promise<v
       let rows: EventRow[];
 
       if (date) {
-        // 按日期过滤：date(started_at) = date(?) 支持传入 'YYYY-MM-DD'
+        // 按日期过滤：将 'YYYY-MM-DD' 转为范围查询，避免 date() 包裹列导致索引失效
+        // DB 中 started_at 是本地时间 ISO 8601 格式（无时区后缀）
+        const dayStart = dayjs(date).startOf('day').format('YYYY-MM-DDTHH:mm:ss');
+        const dayEnd = dayjs(date).add(1, 'day').startOf('day').format('YYYY-MM-DDTHH:mm:ss');
         const countStmt = db.prepare(`
           SELECT COUNT(*) AS total FROM events
-          WHERE device_id = ? AND date(started_at) = date(?)
+          WHERE device_id = ? AND started_at >= ? AND started_at < ?
         `);
-        total = (countStmt.get(deviceId, date) as { total: number }).total;
+        total = (countStmt.get(deviceId, dayStart, dayEnd) as { total: number }).total;
 
         const stmt = db.prepare(`
           SELECT id, device_id, app_name, window_title, started_at, ended_at,
                  duration_seconds, created_at
           FROM events
-          WHERE device_id = ? AND date(started_at) = date(?)
+          WHERE device_id = ? AND started_at >= ? AND started_at < ?
           ORDER BY started_at DESC
           LIMIT ? OFFSET ?
         `);
-        rows = stmt.all(deviceId, date, pageSize, offset) as EventRow[];
+        rows = stmt.all(deviceId, dayStart, dayEnd, pageSize, offset) as EventRow[];
       } else {
         const countStmt = db.prepare(
           'SELECT COUNT(*) AS total FROM events WHERE device_id = ?',
