@@ -1,5 +1,5 @@
 // 设备详情页：实时查看（WebSocket）+ 历史截图时间轴 + 活动事件列表
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Button,
   Card,
@@ -315,6 +315,22 @@ export default function DeviceDetail() {
     connectWs();
   };
 
+  // 历史截图按 taken_at 分组（同一时刻多屏放同一行，组内按 monitor_index 升序）
+  const screenshotGroups = useMemo(() => {
+    const groups = new Map<string, Screenshot[]>();
+    for (const s of screenshots) {
+      const key = s.taken_at;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key)!.push(s);
+    }
+    return Array.from(groups.entries()).map(([takenAt, items]) => ({
+      takenAt,
+      items: items.sort(
+        (a, b) => (a.monitor_index ?? 1) - (b.monitor_index ?? 1),
+      ),
+    }));
+  }, [screenshots]);
+
   return (
     <Spin spinning={deviceLoading}>
       {/* 顶部：设备信息 + 实时查看 */}
@@ -438,67 +454,45 @@ export default function DeviceDetail() {
               {screenshots.length === 0 ? (
                 <Empty description="暂无截图" />
               ) : (
-                (() => {
-                  // 按 taken_at 分组，同一时刻的多屏截图放在同一行
-                  const groups = new Map<string, Screenshot[]>();
-                  for (const s of screenshots) {
-                    const key = s.taken_at;
-                    if (!groups.has(key)) groups.set(key, []);
-                    groups.get(key)!.push(s);
-                  }
-                  // 每组内按 monitor_index 升序
-                  const groupList = Array.from(groups.entries()).map(
-                    ([takenAt, items]) => ({
-                      takenAt,
-                      items: items.sort(
-                        (a, b) =>
-                          (a.monitor_index ?? 1) - (b.monitor_index ?? 1),
-                      ),
-                    }),
-                  );
-
-                  return (
-                    <Timeline
-                      items={groupList.map(({ takenAt, items }) => ({
-                        children: (
-                          <div>
-                            <div style={{ marginBottom: 4 }}>
-                              <Text type="secondary">
-                                {dayjs(takenAt).format(
-                                  'YYYY-MM-DD HH:mm:ss',
-                                )}
-                              </Text>
-                              <Tag color="blue" style={{ marginLeft: 8 }}>
-                                {items.length} 屏
+                <Timeline
+                  items={screenshotGroups.map(({ takenAt, items }) => ({
+                    children: (
+                      <div>
+                        <div style={{ marginBottom: 4 }}>
+                          <Text type="secondary">
+                            {dayjs(takenAt).format(
+                              'YYYY-MM-DD HH:mm:ss',
+                            )}
+                          </Text>
+                          <Tag color="blue" style={{ marginLeft: 8 }}>
+                            {items.length} 屏
+                          </Tag>
+                        </div>
+                        <Space size={8} wrap>
+                          {items.map((s) => (
+                            <div key={s.id}>
+                              <Image
+                                src={s.url}
+                                width={160}
+                                alt={`历史截图-显示器${s.monitor_index ?? 1}`}
+                                style={{
+                                  display: 'block',
+                                  border: '1px solid #d9d9d9',
+                                }}
+                              />
+                              <Tag
+                                color="geekblue"
+                                style={{ marginTop: 4 }}
+                              >
+                                显示器 {s.monitor_index ?? 1}
                               </Tag>
                             </div>
-                            <Space size={8} wrap>
-                              {items.map((s) => (
-                                <div key={s.id}>
-                                  <Image
-                                    src={s.url}
-                                    width={160}
-                                    alt={`历史截图-显示器${s.monitor_index ?? 1}`}
-                                    style={{
-                                      display: 'block',
-                                      border: '1px solid #d9d9d9',
-                                    }}
-                                  />
-                                  <Tag
-                                    color="geekblue"
-                                    style={{ marginTop: 4 }}
-                                  >
-                                    显示器 {s.monitor_index ?? 1}
-                                  </Tag>
-                                </div>
-                              ))}
-                            </Space>
-                          </div>
-                        ),
-                      }))}
-                    />
-                  );
-                })()
+                          ))}
+                        </Space>
+                      </div>
+                    ),
+                  }))}
+                />
               )}
               <Pagination
                 current={screenshotPage}
