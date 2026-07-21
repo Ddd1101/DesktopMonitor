@@ -7,6 +7,7 @@
 import os
 import threading
 from datetime import datetime
+from io import BytesIO
 from typing import List, Optional
 
 import mss
@@ -43,7 +44,7 @@ def _save_with_size_limit(img: Image.Image, file_path: str) -> int:
 
     压缩策略：
     1. 先按 SCREENSHOT_MAX_WIDTH 缩放（高分屏降分辨率）
-    2. 再依次尝试递降的 quality 档位保存
+    2. 在内存中依次尝试递降 quality 档位，命中后一次性落盘
     3. 若所有 quality 档位仍超阈值，则缩小 50% 再尝试一轮
     4. 最终保证落盘文件不超过阈值（或尽可能接近）
 
@@ -68,27 +69,43 @@ def _save_with_size_limit(img: Image.Image, file_path: str) -> int:
             f'缩放: {img.width}x{img.height} -> {new_size[0]}x{new_size[1]}'
         )
 
-    # 依次尝试递降 quality
+    # 在内存中尝试各 quality 档位，命中后一次性落盘
+    chosen_buf: Optional[bytes] = None
+    chosen_quality = quality_steps[-1]
     for quality in quality_steps:
-        current.save(file_path, 'JPEG', quality=quality)
-        file_size = os.path.getsize(file_path)
-        if file_size <= max_size:
-            return quality
+        buf = BytesIO()
+        current.save(buf, 'JPEG', quality=quality)
+        if buf.tell() <= max_size:
+            chosen_buf = buf.getvalue()
+            chosen_quality = quality
+            break
 
     # 所有 quality 档位仍超阈值：缩小 50% 再试一轮
-    if current.width > 480:
+    if chosen_buf is None and current.width > 480:
         new_size = (current.width // 2, current.height // 2)
         current = current.resize(new_size, Image.LANCZOS)
         for quality in quality_steps:
-            current.save(file_path, 'JPEG', quality=quality)
-            if os.path.getsize(file_path) <= max_size:
-                return quality
-        logger.warning(
-            f'截图仍超阈值({config.SCREENSHOT_MAX_SIZE_KB}KB)，'
-            f'最终质量={quality_steps[-1]} 尺寸={new_size}'
-        )
+            buf = BytesIO()
+            current.save(buf, 'JPEG', quality=quality)
+            if buf.tell() <= max_size:
+                chosen_buf = buf.getvalue()
+                chosen_quality = quality
+                break
+        if chosen_buf is None:
+            logger.warning(
+                f'截图仍超阈值({config.SCREENSHOT_MAX_SIZE_KB}KB)，'
+                f'最终质量={quality_steps[-1]} 尺寸={new_size}'
+            )
 
-    return quality_steps[-1]
+    # 最终一次性落盘（仅一次磁盘写入）
+    if chosen_buf is None:
+        buf = BytesIO()
+        current.save(buf, 'JPEG', quality=quality_steps[-1])
+        chosen_buf = buf.getvalue()
+
+    with open(file_path, 'wb') as f:
+        f.write(chosen_buf)
+    return chosen_quality
 
 
 class ScreenCollector:
