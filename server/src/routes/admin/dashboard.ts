@@ -3,6 +3,25 @@ import dayjs from 'dayjs';
 import { db } from '../../db/index.js';
 import { verifyAdminAuth } from '../../utils/adminAuth.js';
 
+// 预编译语句（模块级复用，避免每次请求都 prepare）
+const stmtCountActiveDevices = db.prepare(`
+  SELECT COUNT(*) AS count FROM devices
+  WHERE last_heartbeat_at IS NOT NULL
+    AND last_heartbeat_at >= ? AND last_heartbeat_at < ?
+`);
+const stmtCountScreenshotsToday = db.prepare(`
+  SELECT COUNT(*) AS count FROM screenshots
+  WHERE taken_at >= ? AND taken_at < ?
+`);
+const stmtTopApps = db.prepare(`
+  SELECT app_name, SUM(duration_seconds) AS total_seconds
+  FROM events
+  WHERE started_at >= ? AND started_at < ?
+  GROUP BY app_name
+  ORDER BY total_seconds DESC
+  LIMIT 10
+`);
+
 // Top 应用聚合结果类型
 interface TopAppRow {
   app_name: string;
@@ -29,31 +48,14 @@ export default async function adminDashboardRoutes(app: FastifyInstance): Promis
       const startOfTomorrow = dayjs().add(1, 'day').startOf('day').format('YYYY-MM-DDTHH:mm:ss');
 
       // 活跃设备数：今天有心跳的设备数
-      const activeStmt = db.prepare(`
-        SELECT COUNT(*) AS count FROM devices
-        WHERE last_heartbeat_at IS NOT NULL
-          AND last_heartbeat_at >= ? AND last_heartbeat_at < ?
-      `);
-      const active_device_count = (activeStmt.get(startOfToday, startOfTomorrow) as { count: number }).count;
+      const active_device_count = (stmtCountActiveDevices.get(startOfToday, startOfTomorrow) as { count: number }).count;
 
       // 截图总数：今天的截图数
-      const screenshotStmt = db.prepare(`
-        SELECT COUNT(*) AS count FROM screenshots
-        WHERE taken_at >= ? AND taken_at < ?
-      `);
-      const screenshot_count_today = (screenshotStmt.get(startOfToday, startOfTomorrow) as { count: number })
+      const screenshot_count_today = (stmtCountScreenshotsToday.get(startOfToday, startOfTomorrow) as { count: number })
         .count;
 
       // Top 10 应用：今天事件表中按 app_name 聚合，sum(duration_seconds)，取前 10
-      const topAppsStmt = db.prepare(`
-        SELECT app_name, SUM(duration_seconds) AS total_seconds
-        FROM events
-        WHERE started_at >= ? AND started_at < ?
-        GROUP BY app_name
-        ORDER BY total_seconds DESC
-        LIMIT 10
-      `);
-      const top_apps = topAppsStmt.all(startOfToday, startOfTomorrow) as TopAppRow[];
+      const top_apps = stmtTopApps.all(startOfToday, startOfTomorrow) as TopAppRow[];
 
       reply.send({
         active_device_count,

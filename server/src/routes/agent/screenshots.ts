@@ -9,6 +9,13 @@ import { config } from '../../config/index.js';
 import { verifyAgentAuth } from '../../utils/agentAuth.js';
 import { subscriptionService } from '../../services/subscription.js';
 
+// 预编译语句（模块级复用，避免每次上传都 prepare）
+const stmtInsertScreenshot = db.prepare(`
+  INSERT OR IGNORE INTO screenshots
+    (device_id, file_path, taken_at, monitor_index)
+  VALUES (?, ?, ?, ?)
+`);
+
 // taken_at 字段校验：非空字符串
 const takenAtSchema = z.string().min(1);
 
@@ -116,12 +123,7 @@ export default async function agentScreenshotsRoutes(app: FastifyInstance): Prom
         .replace(/\\/g, '/');
 
       // 写入 screenshots 表（基于 UNIQUE(device_id, taken_at, monitor_index) 去重）
-      const insert = db.prepare(`
-        INSERT OR IGNORE INTO screenshots
-          (device_id, file_path, taken_at, monitor_index)
-        VALUES (?, ?, ?, ?)
-      `);
-      insert.run(deviceId, relativePath, takenAt, monitorIndex);
+      stmtInsertScreenshot.run(deviceId, relativePath, takenAt, monitorIndex);
 
       // 构造访问 URL（静态文件服务 /screenshots/* 由 Task 9 注册）
       const url = `/screenshots/${relativePath}`;

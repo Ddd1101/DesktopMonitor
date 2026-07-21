@@ -3,6 +3,11 @@ import jwt, { type JwtPayload } from 'jsonwebtoken';
 import { db } from '../db/index.js';
 import { verifyAgentToken } from './auth.js';
 
+// 预编译语句（模块级复用，避免每次请求都 prepare）
+const stmtSelectAgentSecret = db.prepare(
+  'SELECT jwt_secret FROM agents WHERE device_id = ?',
+);
+
 /**
  * Agent 鉴权中间件（Fastify preHandler）
  *
@@ -39,8 +44,7 @@ export async function verifyAgentAuth(
   }
 
   // 查询该 Agent 的 jwt_secret
-  const stmt = db.prepare('SELECT jwt_secret FROM agents WHERE device_id = ?');
-  const row = stmt.get(deviceId) as { jwt_secret: string } | undefined;
+  const row = stmtSelectAgentSecret.get(deviceId) as { jwt_secret: string } | undefined;
   if (!row) {
     reply.code(401).send({ error: '设备未注册或已被吊销' });
     return;

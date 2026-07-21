@@ -2,6 +2,25 @@ import type { FastifyInstance } from 'fastify';
 import { db } from '../../db/index.js';
 import { verifyAdminAuth } from '../../utils/adminAuth.js';
 
+// 预编译语句（模块级复用，避免每次请求都 prepare）
+const stmtCountScreenshots = db.prepare(
+  'SELECT COUNT(*) AS total FROM screenshots WHERE device_id = ?',
+);
+const stmtSelectScreenshotsPage = db.prepare(`
+  SELECT id, device_id, file_path, taken_at, monitor_index, created_at
+  FROM screenshots
+  WHERE device_id = ?
+  ORDER BY taken_at DESC, monitor_index ASC
+  LIMIT ? OFFSET ?
+`);
+const stmtSelectScreenshotsPlayback = db.prepare(`
+  SELECT id, device_id, file_path, taken_at, monitor_index, created_at
+  FROM screenshots
+  WHERE device_id = ? AND taken_at >= ? AND taken_at <= ?
+  ORDER BY taken_at ASC, monitor_index ASC
+  LIMIT ?
+`);
+
 // 截图行类型
 interface ScreenshotRow {
   id: number;
@@ -36,20 +55,10 @@ export default async function adminScreenshotsRoutes(app: FastifyInstance): Prom
       const offset = (page - 1) * pageSize;
 
       // 总数
-      const countStmt = db.prepare(
-        'SELECT COUNT(*) AS total FROM screenshots WHERE device_id = ?',
-      );
-      const total = (countStmt.get(deviceId) as { total: number }).total;
+      const total = (stmtCountScreenshots.get(deviceId) as { total: number }).total;
 
       // 分页查询（按 taken_at 降序，monitor_index 升序）
-      const stmt = db.prepare(`
-        SELECT id, device_id, file_path, taken_at, monitor_index, created_at
-        FROM screenshots
-        WHERE device_id = ?
-        ORDER BY taken_at DESC, monitor_index ASC
-        LIMIT ? OFFSET ?
-      `);
-      const rows = stmt.all(deviceId, pageSize, offset) as ScreenshotRow[];
+      const rows = stmtSelectScreenshotsPage.all(deviceId, pageSize, offset) as ScreenshotRow[];
 
       // 为每条记录构造访问 URL
       const items = rows.map((row) => ({
@@ -92,14 +101,7 @@ export default async function adminScreenshotsRoutes(app: FastifyInstance): Prom
 
       // 查询时间范围内的截图（升序，最多 500 条避免过大响应）
       const MAX_PLAYBACK = 500;
-      const stmt = db.prepare(`
-        SELECT id, device_id, file_path, taken_at, monitor_index, created_at
-        FROM screenshots
-        WHERE device_id = ? AND taken_at >= ? AND taken_at <= ?
-        ORDER BY taken_at ASC, monitor_index ASC
-        LIMIT ?
-      `);
-      const rows = stmt.all(deviceId, startTime, endTime, MAX_PLAYBACK) as ScreenshotRow[];
+      const rows = stmtSelectScreenshotsPlayback.all(deviceId, startTime, endTime, MAX_PLAYBACK) as ScreenshotRow[];
 
       const items = rows.map((row) => ({
         ...row,

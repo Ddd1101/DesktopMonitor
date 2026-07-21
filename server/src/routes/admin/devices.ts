@@ -3,6 +3,24 @@ import { db } from '../../db/index.js';
 import { config } from '../../config/index.js';
 import { verifyAdminAuth } from '../../utils/adminAuth.js';
 
+// 预编译语句（模块级复用，避免每次请求都 prepare）
+const stmtSelectAllDevices = db.prepare(`
+  SELECT d.device_id, d.hostname, d.ip_address, d.os_info,
+         d.last_heartbeat_at, d.created_at,
+         a.hostname AS agent_hostname
+  FROM devices d
+  LEFT JOIN agents a ON d.agent_id = a.id
+  ORDER BY d.created_at DESC
+`);
+const stmtSelectDeviceById = db.prepare(`
+  SELECT d.device_id, d.hostname, d.ip_address, d.os_info,
+         d.last_heartbeat_at, d.created_at,
+         a.hostname AS agent_hostname
+  FROM devices d
+  LEFT JOIN agents a ON d.agent_id = a.id
+  WHERE d.device_id = ?
+`);
+
 // 设备行类型
 interface DeviceRow {
   device_id: string;
@@ -38,15 +56,7 @@ export default async function adminDevicesRoutes(app: FastifyInstance): Promise<
     },
     async (request, reply) => {
       // 关联 agents 表取 hostname，作为 devices.hostname 的补充
-      const stmt = db.prepare(`
-        SELECT d.device_id, d.hostname, d.ip_address, d.os_info,
-               d.last_heartbeat_at, d.created_at,
-               a.hostname AS agent_hostname
-        FROM devices d
-        LEFT JOIN agents a ON d.agent_id = a.id
-        ORDER BY d.created_at DESC
-      `);
-      const rows = stmt.all() as DeviceRow[];
+      const rows = stmtSelectAllDevices.all() as DeviceRow[];
 
       const now = Date.now();
       const timeoutMs = config.heartbeatTimeoutSeconds * 1000;
@@ -80,15 +90,7 @@ export default async function adminDevicesRoutes(app: FastifyInstance): Promise<
     },
     async (request, reply) => {
       const { deviceId } = request.params as { deviceId: string };
-      const stmt = db.prepare(`
-        SELECT d.device_id, d.hostname, d.ip_address, d.os_info,
-               d.last_heartbeat_at, d.created_at,
-               a.hostname AS agent_hostname
-        FROM devices d
-        LEFT JOIN agents a ON d.agent_id = a.id
-        WHERE d.device_id = ?
-      `);
-      const row = stmt.get(deviceId) as DeviceRow | undefined;
+      const row = stmtSelectDeviceById.get(deviceId) as DeviceRow | undefined;
       if (!row) {
         reply.code(404).send({ error: '设备不存在' });
         return;

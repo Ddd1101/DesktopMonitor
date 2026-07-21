@@ -3,6 +3,33 @@ import dayjs from 'dayjs';
 import { db } from '../../db/index.js';
 import { verifyAdminAuth } from '../../utils/adminAuth.js';
 
+// 预编译语句（模块级复用，避免每次请求都 prepare）
+// 按日期过滤
+const stmtCountEventsByDate = db.prepare(`
+  SELECT COUNT(*) AS total FROM events
+  WHERE device_id = ? AND started_at >= ? AND started_at < ?
+`);
+const stmtSelectEventsByDate = db.prepare(`
+  SELECT id, device_id, app_name, window_title, started_at, ended_at,
+         duration_seconds, created_at
+  FROM events
+  WHERE device_id = ? AND started_at >= ? AND started_at < ?
+  ORDER BY started_at DESC
+  LIMIT ? OFFSET ?
+`);
+// 无日期过滤
+const stmtCountEvents = db.prepare(
+  'SELECT COUNT(*) AS total FROM events WHERE device_id = ?',
+);
+const stmtSelectEvents = db.prepare(`
+  SELECT id, device_id, app_name, window_title, started_at, ended_at,
+         duration_seconds, created_at
+  FROM events
+  WHERE device_id = ?
+  ORDER BY started_at DESC
+  LIMIT ? OFFSET ?
+`);
+
 // 事件行类型
 interface EventRow {
   id: number;
@@ -50,36 +77,11 @@ export default async function adminEventsRoutes(app: FastifyInstance): Promise<v
         // DB 中 started_at 是本地时间 ISO 8601 格式（无时区后缀）
         const dayStart = dayjs(date).startOf('day').format('YYYY-MM-DDTHH:mm:ss');
         const dayEnd = dayjs(date).add(1, 'day').startOf('day').format('YYYY-MM-DDTHH:mm:ss');
-        const countStmt = db.prepare(`
-          SELECT COUNT(*) AS total FROM events
-          WHERE device_id = ? AND started_at >= ? AND started_at < ?
-        `);
-        total = (countStmt.get(deviceId, dayStart, dayEnd) as { total: number }).total;
-
-        const stmt = db.prepare(`
-          SELECT id, device_id, app_name, window_title, started_at, ended_at,
-                 duration_seconds, created_at
-          FROM events
-          WHERE device_id = ? AND started_at >= ? AND started_at < ?
-          ORDER BY started_at DESC
-          LIMIT ? OFFSET ?
-        `);
-        rows = stmt.all(deviceId, dayStart, dayEnd, pageSize, offset) as EventRow[];
+        total = (stmtCountEventsByDate.get(deviceId, dayStart, dayEnd) as { total: number }).total;
+        rows = stmtSelectEventsByDate.all(deviceId, dayStart, dayEnd, pageSize, offset) as EventRow[];
       } else {
-        const countStmt = db.prepare(
-          'SELECT COUNT(*) AS total FROM events WHERE device_id = ?',
-        );
-        total = (countStmt.get(deviceId) as { total: number }).total;
-
-        const stmt = db.prepare(`
-          SELECT id, device_id, app_name, window_title, started_at, ended_at,
-                 duration_seconds, created_at
-          FROM events
-          WHERE device_id = ?
-          ORDER BY started_at DESC
-          LIMIT ? OFFSET ?
-        `);
-        rows = stmt.all(deviceId, pageSize, offset) as EventRow[];
+        total = (stmtCountEvents.get(deviceId) as { total: number }).total;
+        rows = stmtSelectEvents.all(deviceId, pageSize, offset) as EventRow[];
       }
 
       reply.send({ items: rows, total });

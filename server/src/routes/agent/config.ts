@@ -2,6 +2,11 @@ import type { FastifyInstance } from 'fastify';
 import { db } from '../../db/index.js';
 import { verifyAgentAuth } from '../../utils/agentAuth.js';
 
+// 预编译语句（模块级复用，Agent 每 60 秒轮询一次）
+const stmtSelectDeviceConfig = db.prepare(
+  'SELECT * FROM device_configs WHERE device_id = ?',
+);
+
 // 设备配置类型
 interface DeviceConfig {
   screenshot_quality: number;
@@ -46,8 +51,7 @@ export default async function agentConfigRoutes(app: FastifyInstance): Promise<v
     async (request, reply) => {
       const deviceId = request.agent!.deviceId;
 
-      const stmt = db.prepare('SELECT * FROM device_configs WHERE device_id = ?');
-      const row = stmt.get(deviceId) as DeviceConfigRow | undefined;
+      const row = stmtSelectDeviceConfig.get(deviceId) as DeviceConfigRow | undefined;
 
       if (!row) {
         // 无记录则返回默认值（不写入数据库，避免 Agent 轮询触发副作用）

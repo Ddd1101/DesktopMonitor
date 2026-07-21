@@ -3,6 +3,20 @@ import { z } from 'zod';
 import { db } from '../../db/index.js';
 import { verifyAdminAuth } from '../../utils/adminAuth.js';
 
+// 预编译语句（模块级复用，GET/PUT 共享）
+const stmtInsertDefaultConfig = db.prepare(`
+  INSERT OR IGNORE INTO device_configs
+    (device_id, screenshot_quality, screenshot_max_width,
+     screenshot_interval_sec, retention_value, retention_unit)
+  VALUES (?, ?, ?, ?, ?, ?)
+`);
+const stmtSelectDeviceConfig = db.prepare(
+  'SELECT * FROM device_configs WHERE device_id = ?',
+);
+const stmtSelectMonitorResolutions = db.prepare(
+  'SELECT monitor_resolutions FROM devices WHERE device_id = ?',
+);
+
 // 设备配置类型
 export interface DeviceConfig {
   screenshot_quality: number;
@@ -83,13 +97,7 @@ export default async function adminConfigRoutes(app: FastifyInstance): Promise<v
       const { deviceId } = request.params as { deviceId: string };
 
       // 若无记录则插入默认行（INSERT OR IGNORE 保证幂等）
-      const insertDefault = db.prepare(`
-        INSERT OR IGNORE INTO device_configs
-          (device_id, screenshot_quality, screenshot_max_width,
-           screenshot_interval_sec, retention_value, retention_unit)
-        VALUES (?, ?, ?, ?, ?, ?)
-      `);
-      insertDefault.run(
+      stmtInsertDefaultConfig.run(
         deviceId,
         DEFAULT_CONFIG.screenshot_quality,
         DEFAULT_CONFIG.screenshot_max_width,
@@ -99,8 +107,7 @@ export default async function adminConfigRoutes(app: FastifyInstance): Promise<v
       );
 
       // 读取配置行
-      const stmt = db.prepare('SELECT * FROM device_configs WHERE device_id = ?');
-      const row = stmt.get(deviceId) as DeviceConfigRow | undefined;
+      const row = stmtSelectDeviceConfig.get(deviceId) as DeviceConfigRow | undefined;
       if (!row) {
         // 理论上不会走到这里（INSERT OR IGNORE 后必然存在）
         reply.code(500).send({ error: '配置读取失败' });
@@ -109,10 +116,7 @@ export default async function adminConfigRoutes(app: FastifyInstance): Promise<v
       const config = rowToConfig(row);
 
       // 读取 devices.monitor_resolutions
-      const deviceStmt = db.prepare(
-        'SELECT monitor_resolutions FROM devices WHERE device_id = ?',
-      );
-      const deviceRow = deviceStmt.get(deviceId) as DeviceMonitorRow | undefined;
+      const deviceRow = stmtSelectMonitorResolutions.get(deviceId) as DeviceMonitorRow | undefined;
       let monitor_resolutions: { width: number; height: number }[] = [];
       if (deviceRow?.monitor_resolutions) {
         try {
@@ -159,13 +163,7 @@ export default async function adminConfigRoutes(app: FastifyInstance): Promise<v
       }
 
       // 先确保存在一行（INSERT OR IGNORE 默认行），再 UPDATE
-      const insertDefault = db.prepare(`
-        INSERT OR IGNORE INTO device_configs
-          (device_id, screenshot_quality, screenshot_max_width,
-           screenshot_interval_sec, retention_value, retention_unit)
-        VALUES (?, ?, ?, ?, ?, ?)
-      `);
-      insertDefault.run(
+      stmtInsertDefaultConfig.run(
         deviceId,
         DEFAULT_CONFIG.screenshot_quality,
         DEFAULT_CONFIG.screenshot_max_width,
@@ -208,10 +206,7 @@ export default async function adminConfigRoutes(app: FastifyInstance): Promise<v
       updateStmt.run(...params);
 
       // 返回更新后的配置
-      const selectStmt = db.prepare(
-        'SELECT * FROM device_configs WHERE device_id = ?',
-      );
-      const row = selectStmt.get(deviceId) as DeviceConfigRow;
+      const row = stmtSelectDeviceConfig.get(deviceId) as DeviceConfigRow;
       const config = rowToConfig(row);
 
       reply.send({ success: true, config });

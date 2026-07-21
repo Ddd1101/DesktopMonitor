@@ -3,6 +3,13 @@ import { z } from 'zod';
 import { db } from '../../db/index.js';
 import { verifyAgentAuth } from '../../utils/agentAuth.js';
 
+// 预编译语句（模块级复用，避免每次事件上报都 prepare）
+const stmtInsertEvent = db.prepare(`
+  INSERT OR IGNORE INTO events
+    (device_id, app_name, window_title, started_at, ended_at, duration_seconds)
+  VALUES (?, ?, ?, ?, ?, ?)
+`);
+
 // 事件上报请求体 schema
 const eventsSchema = z.object({
   events: z.array(
@@ -46,17 +53,11 @@ export default async function agentEventsRoutes(app: FastifyInstance): Promise<v
       }
 
       // 基于 UNIQUE(device_id, started_at) 去重，使用 INSERT OR IGNORE
-      const insert = db.prepare(`
-        INSERT OR IGNORE INTO events
-          (device_id, app_name, window_title, started_at, ended_at, duration_seconds)
-        VALUES (?, ?, ?, ?, ?, ?)
-      `);
-
       // 使用事务批量插入，保证原子性与性能
       const tx = db.transaction((items: typeof events) => {
         let inserted = 0;
         for (const item of items) {
-          const result = insert.run(
+          const result = stmtInsertEvent.run(
             deviceId,
             item.app_name,
             item.window_title ?? null,
