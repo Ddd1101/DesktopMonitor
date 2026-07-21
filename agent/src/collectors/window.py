@@ -2,7 +2,8 @@
 
 每秒采样一次前台窗口，按 30 秒窗口聚合并写入待上传事件队列。
 
-进程名获取采用 wmic 子进程方式（约 100ms 一次），结果按 PID 缓存避免重复查询。
+进程名获取优先使用 psutil（快、跨平台），回退到 wmic。
+结果按 PID 缓存并带 TTL，避免 PID 复用导致数据错误。
 """
 import subprocess
 import threading
@@ -13,6 +14,12 @@ from typing import Optional
 import win32gui
 import win32process
 
+try:
+    import psutil
+    _HAS_PSUTIL = True
+except ImportError:
+    _HAS_PSUTIL = False
+
 from src.config.config import config
 from src.storage.db import get_db
 from src.utils.logger import get_logger
@@ -20,46 +27,57 @@ from src.utils.logger import get_logger
 logger = get_logger(__name__)
 
 
-# ----- 进程名缓存 -----
-# pid -> process_name
-_process_name_cache: dict[int, str] = {}
+# ----- 进程名缓存（带 TTL） -----
+# pid -> (process_name, timestamp)
+_process_name_cache: dict[int, tuple[str, float]] = {}
 _cache_lock = threading.Lock()
+_CACHE_TTL = 300  # 5 分钟，避免 PID 复用导致数据错误
 
 
 def _get_process_name(pid: int) -> str:
-    """通过 wmic 查询进程名并缓存。
+    """查询进程名并缓存（带 TTL）。
 
-    查询失败或超时时回退为 'pid-{pid}'。
+    优先使用 psutil（快、无子进程开销），回退到 wmic。
+    查询失败时回退为 'pid-{pid}'。
     """
     if not pid:
         return 'unknown'
 
-    # 先读缓存
+    # 先读缓存（带 TTL）
+    now = time.monotonic()
     with _cache_lock:
         cached = _process_name_cache.get(pid)
-    if cached:
-        return cached
+        if cached and now - cached[1] < _CACHE_TTL:
+            return cached[0]
 
     name = f'pid-{pid}'
-    try:
-        # 使用 wmic 查询进程名（Windows 内置命令，约 100ms）
-        result = subprocess.run(
-            ['wmic', 'process', 'where', f'processid={pid}', 'get', 'name'],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        if result.returncode == 0:
-            lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
-            # 输出格式：第一行是 "Name"，第二行才是进程名
-            if len(lines) >= 2:
-                name = lines[1]
-    except Exception as e:
-        logger.debug(f'查询进程名失败 pid={pid}: {e}')
+
+    if _HAS_PSUTIL:
+        try:
+            name = psutil.Process(pid).name()
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+        except Exception as e:
+            logger.debug(f'psutil 查询进程名失败 pid={pid}: {e}')
+    else:
+        # 回退到 wmic（约 100ms，Windows 11 22H2+ 已弃用）
+        try:
+            result = subprocess.run(
+                ['wmic', 'process', 'where', f'processid={pid}', 'get', 'name'],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if result.returncode == 0:
+                lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+                if len(lines) >= 2:
+                    name = lines[1]
+        except Exception as e:
+            logger.debug(f'wmic 查询进程名失败 pid={pid}: {e}')
 
     # 写入缓存
     with _cache_lock:
-        _process_name_cache[pid] = name
+        _process_name_cache[pid] = (name, now)
     return name
 
 
