@@ -6,6 +6,7 @@
 """
 import os
 import threading
+import time
 from datetime import datetime
 from io import BytesIO
 from typing import List, Optional
@@ -127,6 +128,8 @@ class ScreenCollector:
         )
         # 停止信号
         self._stop_event = threading.Event()
+        # 唤醒信号：用于 update_interval 时打断 wait，使新间隔立即生效
+        self._wake_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
 
     def capture_once(self) -> List[str]:
@@ -200,7 +203,11 @@ class ScreenCollector:
         return saved_paths
 
     def _loop(self) -> None:
-        """后台采集循环：每隔 interval 秒采集一次。"""
+        """后台采集循环：每隔 interval 秒采集一次。
+
+        使用分段 wait（1 秒粒度）响应 interval 变化，
+        避免 update_interval 后要等到原 interval 结束才生效。
+        """
         logger.info(f'屏幕采集器已启动，间隔 {self.interval} 秒')
         while not self._stop_event.is_set():
             try:
@@ -208,8 +215,16 @@ class ScreenCollector:
             except Exception as e:
                 # 线程内异常必须捕获，不让线程崩溃
                 logger.error(f'采集循环异常: {e}', exc_info=True)
-            # 使用 wait 实现可中断的 sleep
-            self._stop_event.wait(self.interval)
+            # 分段 wait，最多 1 秒粒度响应 interval 变化与 wake 信号
+            deadline = time.monotonic() + self.interval
+            while time.monotonic() < deadline:
+                if self._stop_event.is_set():
+                    break
+                if self._wake_event.is_set():
+                    self._wake_event.clear()
+                    break
+                # 剩余时间与 1 秒取小，避免超过 deadline
+                self._stop_event.wait(min(1.0, deadline - time.monotonic()))
         logger.info('屏幕采集器已停止')
 
     def start(self) -> None:
@@ -231,9 +246,9 @@ class ScreenCollector:
             self._thread = None
 
     def update_interval(self, new_interval: int) -> None:
-        """动态更新采集间隔。
+        """动态更新采集间隔，立即生效。
 
-        下一次 _loop 中的 wait 调用会自动使用新值。
+        通过 _wake_event 打断当前 wait，使新间隔在下一轮采集立即生效。
 
         Args:
             new_interval: 新的采集间隔（秒）
@@ -242,4 +257,6 @@ class ScreenCollector:
             return
         old = self.interval
         self.interval = new_interval
+        # 唤醒正在 wait 的采集线程，使其立即用新间隔开始下一轮
+        self._wake_event.set()
         logger.info(f'采集间隔已更新: {old}s -> {new_interval}s')
