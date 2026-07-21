@@ -96,6 +96,21 @@ export async function getDeviceScreenshots(
 }
 
 /**
+ * 获取回放截图（按时间范围，升序）
+ */
+export async function getPlaybackScreenshots(
+  deviceId: string,
+  startTime: string,
+  endTime: string,
+): Promise<Screenshot[]> {
+  const { data } = await apiClient.get<{ items: Screenshot[]; total: number }>(
+    `/admin/devices/${deviceId}/screenshots/playback`,
+    { params: { startTime, endTime } },
+  );
+  return data.items ?? [];
+}
+
+/**
  * 获取设备活动事件分页列表
  */
 export async function getDeviceEvents(

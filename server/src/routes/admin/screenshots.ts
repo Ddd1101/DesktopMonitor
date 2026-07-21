@@ -13,8 +13,9 @@ interface ScreenshotRow {
 }
 
 /**
- * 管理员截图分页查询路由
+ * 管理员截图路由
  * - GET /api/admin/devices/:deviceId/screenshots：按 taken_at 降序分页查询
+ * - GET /api/admin/devices/:deviceId/screenshots/playback：按时间范围查询（回放用）
  */
 export default async function adminScreenshotsRoutes(app: FastifyInstance): Promise<void> {
   app.get(
@@ -57,6 +58,55 @@ export default async function adminScreenshotsRoutes(app: FastifyInstance): Prom
       }));
 
       reply.send({ items, total, page, pageSize });
+    },
+  );
+
+  /**
+   * 回放查询：按时间范围获取截图（升序），最多 500 条
+   * 查询参数：startTime, endTime（ISO 8601）
+   */
+  app.get(
+    '/api/admin/devices/:deviceId/screenshots/playback',
+    {
+      preHandler: [verifyAdminAuth],
+    },
+    async (request, reply) => {
+      const { deviceId } = request.params as { deviceId: string };
+      const query = request.query as { startTime?: string; endTime?: string };
+
+      const startTime = query.startTime;
+      const endTime = query.endTime;
+
+      if (!startTime || !endTime) {
+        reply.code(400).send({ error: '需要 startTime 和 endTime 参数' });
+        return;
+      }
+
+      // 验证时间格式
+      const startDate = new Date(startTime);
+      const endDate = new Date(endTime);
+      if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime())) {
+        reply.code(400).send({ error: '时间格式无效' });
+        return;
+      }
+
+      // 查询时间范围内的截图（升序，最多 500 条避免过大响应）
+      const MAX_PLAYBACK = 500;
+      const stmt = db.prepare(`
+        SELECT id, device_id, file_path, taken_at, monitor_index, created_at
+        FROM screenshots
+        WHERE device_id = ? AND taken_at >= ? AND taken_at <= ?
+        ORDER BY taken_at ASC, monitor_index ASC
+        LIMIT ?
+      `);
+      const rows = stmt.all(deviceId, startTime, endTime, MAX_PLAYBACK) as ScreenshotRow[];
+
+      const items = rows.map((row) => ({
+        ...row,
+        url: `/screenshots/${row.file_path}`,
+      }));
+
+      reply.send({ items, total: items.length });
     },
   );
 }

@@ -27,6 +27,7 @@ import {
   type Device,
   type Screenshot,
 } from '../api/admin';
+import PlaybackPanel from '../components/PlaybackPanel';
 
 const { Text, Title } = Typography;
 
@@ -386,6 +387,11 @@ export default function DeviceDetail() {
             )}
           </div>
         )}
+      </Card>
+
+      {/* 历史回放 */}
+      <Card title="历史回放" style={{ marginTop: 16 }}>
+        <PlaybackPanel deviceId={deviceId} />
       </Card>
 
       {/* 下方：左右分栏，左为历史截图时间轴，右为事件列表 */}
