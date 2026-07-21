@@ -26,9 +26,11 @@ export default function Devices() {
     }
   };
 
-  // 进入页面时加载
+  // 进入页面时加载 + 自动刷新（每 30 秒）
   useEffect(() => {
     loadDevices();
+    const timer = setInterval(loadDevices, 30_000);
+    return () => clearInterval(timer);
   }, []);
 
   // 表格列定义

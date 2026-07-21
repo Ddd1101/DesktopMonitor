@@ -31,6 +31,15 @@ class Config:
     # 上传器轮询间隔（秒）
     UPLOAD_INTERVAL = int(os.getenv('UPLOAD_INTERVAL', '60'))
 
+    # ----- 截图压缩 -----
+    # 截图大小阈值（KB），超过则自动降低清晰度重新压缩
+    SCREENSHOT_MAX_SIZE_KB = int(os.getenv('SCREENSHOT_MAX_SIZE_KB', '200'))
+    # 压缩递降的质量档位（依次尝试，直到低于阈值或用完）
+    SCREENSHOT_QUALITY_STEPS = [70, 50, 30, 15]
+    # 缩放比例上限（宽/高超过此值时按比例缩小，None 表示不缩放）
+    # 高分屏（如 4K）截图分辨率过大，即使低质量也超阈值，需缩放
+    SCREENSHOT_MAX_WIDTH = int(os.getenv('SCREENSHOT_MAX_WIDTH', '1920'))
+
     # ----- 日志 -----
     # 日志级别（DEBUG / INFO / WARNING / ERROR）
     LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')

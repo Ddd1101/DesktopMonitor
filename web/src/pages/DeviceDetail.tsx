@@ -37,14 +37,16 @@ const PAGE_SIZE = 10;
 interface WsMessage {
   type: string;
   url?: string;
+  monitor_index?: number;
   timestamp?: string;
   [key: string]: unknown;
 }
 
-// 实时截图状态
+// 实时截图状态（按显示器索引分组）
 interface LiveScreenshot {
   url: string;
   timestamp: string;
+  monitorIndex: number;
 }
 
 export default function DeviceDetail() {
@@ -56,10 +58,16 @@ export default function DeviceDetail() {
 
   // 实时查看相关状态
   const [wsConnected, setWsConnected] = useState(false);
-  const [latestScreenshot, setLatestScreenshot] = useState<LiveScreenshot | null>(
-    null,
+  // 多屏实时截图：monitorIndex → LiveScreenshot
+  const [liveScreens, setLiveScreens] = useState<Map<number, LiveScreenshot>>(
+    new Map(),
   );
+  const [lastUpdateTime, setLastUpdateTime] = useState<string>('');
+  const [screenshotCount, setScreenshotCount] = useState(0);
   const wsRef = useRef<WebSocket | null>(null);
+  const heartbeatRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const reconnectRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const manualCloseRef = useRef(false);
 
   // 历史截图分页
   const [screenshots, setScreenshots] = useState<Screenshot[]>([]);
@@ -122,54 +130,119 @@ export default function DeviceDetail() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [deviceId]);
 
-  // 组件卸载时关闭 WebSocket 连接
+  // 自动刷新：每 30 秒轮询设备信息、历史截图、活动事件（依赖当前页码，翻页时重建定时器）
+  useEffect(() => {
+    const timer = setInterval(() => {
+      loadDevice();
+      loadScreenshots(screenshotPage);
+      loadEvents(eventPage);
+    }, 30_000);
+    return () => clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [deviceId, screenshotPage, eventPage]);
+
+  // 组件卸载时清理 WebSocket 连接与定时器
   useEffect(() => {
     return () => {
-      if (wsRef.current) {
-        wsRef.current.close();
-        wsRef.current = null;
-      }
+      cleanupWs();
     };
   }, []);
 
-  // 切换实时查看：建立或关闭 WebSocket
-  const toggleWs = () => {
-    // 已存在连接则关闭
+  // 清理 WebSocket 相关资源
+  const cleanupWs = () => {
+    if (heartbeatRef.current) {
+      clearInterval(heartbeatRef.current);
+      heartbeatRef.current = null;
+    }
+    if (reconnectRef.current) {
+      clearTimeout(reconnectRef.current);
+      reconnectRef.current = null;
+    }
     if (wsRef.current) {
       wsRef.current.close();
       wsRef.current = null;
-      setWsConnected(false);
-      return;
     }
-    // 根据当前页面协议推导 ws/wss，host 复用当前域名（vite 已代理 /ws）
+  };
+
+  // 建立 WebSocket 连接（含心跳保活 + 断线重连）
+  const connectWs = () => {
+    manualCloseRef.current = false;
+
     const wsUrl = `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws/monitor/${deviceId}`;
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
+
     ws.onopen = () => {
       setWsConnected(true);
+      setScreenshotCount(0);
       message.success('实时连接已建立');
+      // 心跳保活：每 25 秒发送 ping，防止中间件超时断开
+      heartbeatRef.current = setInterval(() => {
+        if (wsRef.current?.readyState === WebSocket.OPEN) {
+          wsRef.current.send('ping');
+        }
+      }, 25_000);
     };
+
     ws.onmessage = (event) => {
+      // pong 心跳响应，忽略
+      if (event.data === 'pong') return;
       try {
         const msg = JSON.parse(event.data) as WsMessage;
-        // 截图类型消息：更新实时画面
         if (msg.type === 'screenshot' && msg.url) {
-          setLatestScreenshot({
-            url: msg.url,
-            timestamp: msg.timestamp || dayjs().toISOString(),
+          const monitorIndex = msg.monitor_index ?? 1;
+          const ts = msg.timestamp || dayjs().toISOString();
+          setLiveScreens((prev) => {
+            const next = new Map(prev);
+            next.set(monitorIndex, {
+              url: msg.url!,
+              timestamp: ts,
+              monitorIndex,
+            });
+            return next;
           });
+          setLastUpdateTime(ts);
+          setScreenshotCount((c) => c + 1);
         }
       } catch (err) {
         console.error('解析 WebSocket 消息失败', err);
       }
     };
+
     ws.onerror = () => {
-      message.error('实时连接异常');
+      // 不在此处 message.error，避免重连时刷屏
+      console.error('WebSocket 连接异常');
     };
+
     ws.onclose = () => {
       setWsConnected(false);
       wsRef.current = null;
+      if (heartbeatRef.current) {
+        clearInterval(heartbeatRef.current);
+        heartbeatRef.current = null;
+      }
+      // 非用户主动关闭时自动重连（3 秒后）
+      if (!manualCloseRef.current) {
+        reconnectRef.current = setTimeout(() => {
+          connectWs();
+        }, 3_000);
+      }
     };
+  };
+
+  // 切换实时查看
+  const toggleWs = () => {
+    // 已连接则断开
+    if (wsRef.current) {
+      manualCloseRef.current = true;
+      cleanupWs();
+      setWsConnected(false);
+      setLiveScreens(new Map());
+      setLastUpdateTime('');
+      setScreenshotCount(0);
+      return;
+    }
+    connectWs();
   };
 
   // 事件表格列定义
@@ -248,27 +321,66 @@ export default function DeviceDetail() {
         {/* 实时画面区：仅连接建立后展示 */}
         {wsConnected && (
           <div style={{ marginTop: 16 }}>
-            <Title level={5}>实时画面</Title>
-            {latestScreenshot ? (
-              <div>
-                <img
-                  src={latestScreenshot.url}
-                  alt="实时截图"
-                  style={{
-                    maxWidth: '100%',
-                    maxHeight: 400,
-                    border: '1px solid #d9d9d9',
-                  }}
-                />
-                <div style={{ marginTop: 8 }}>
-                  <Text type="secondary">
-                    截图时间：
-                    {dayjs(latestScreenshot.timestamp).format(
-                      'YYYY-MM-DD HH:mm:ss',
-                    )}
-                  </Text>
-                </div>
-              </div>
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                marginBottom: 8,
+              }}
+            >
+              <Space>
+                <Title level={5} style={{ margin: 0 }}>
+                  实时画面
+                </Title>
+                <Tag color="green">
+                  {liveScreens.size > 0
+                    ? `${liveScreens.size} 屏`
+                    : '等待中'}
+                </Tag>
+                <Text type="secondary">
+                  已接收 {screenshotCount} 张
+                </Text>
+              </Space>
+              {lastUpdateTime && (
+                <Text type="secondary">
+                  最后更新：
+                  {dayjs(lastUpdateTime).format('YYYY-MM-DD HH:mm:ss')}
+                </Text>
+              )}
+            </div>
+
+            {liveScreens.size > 0 ? (
+              <Space size={12} wrap>
+                {Array.from(liveScreens.values())
+                  .sort((a, b) => a.monitorIndex - b.monitorIndex)
+                  .map((s) => (
+                    <div key={s.monitorIndex}>
+                      <img
+                        src={s.url}
+                        alt={`实时画面-显示器${s.monitorIndex}`}
+                        style={{
+                          maxWidth: '100%',
+                          maxHeight: 360,
+                          border: '1px solid #d9d9d9',
+                          display: 'block',
+                        }}
+                      />
+                      <Tag
+                        color="geekblue"
+                        style={{ marginTop: 4 }}
+                      >
+                        显示器 {s.monitorIndex}
+                      </Tag>
+                      <Text
+                        type="secondary"
+                        style={{ marginLeft: 8, fontSize: 12 }}
+                      >
+                        {dayjs(s.timestamp).format('HH:mm:ss')}
+                      </Text>
+                    </div>
+                  ))}
+              </Space>
             ) : (
               <Empty description="等待推送实时截图..." />
             )}

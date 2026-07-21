@@ -1,6 +1,7 @@
 """屏幕采集器模块
 
 使用 mss 抓取所有显示器（多屏支持），Pillow 转 JPEG 后落盘，并写入待上传队列。
+落盘前根据 SCREENSHOT_MAX_SIZE_KB 阈值自动压缩（降质量 + 缩放），控制文件体积。
 采集目录结构：agent/data/screenshots/{YYYYMMDD}/{YYYYMMDD_HHMMSS}_m{idx}.jpg
 """
 import os
@@ -16,6 +17,59 @@ from src.storage.db import get_db
 from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+
+def _save_with_size_limit(img: Image.Image, file_path: str) -> int:
+    """将图片保存为 JPEG，若超过大小阈值则逐步降低清晰度重新压缩。
+
+    压缩策略：
+    1. 先按 SCREENSHOT_MAX_WIDTH 缩放（高分屏降分辨率）
+    2. 再依次尝试递降的 quality 档位保存
+    3. 若所有 quality 档位仍超阈值，则缩小 50% 再尝试一轮
+    4. 最终保证落盘文件不超过阈值（或尽可能接近）
+
+    Args:
+        img: PIL Image 对象（RGB）
+        file_path: 保存路径
+
+    Returns:
+        最终保存的 quality 值
+    """
+    max_size = config.SCREENSHOT_MAX_SIZE_KB * 1024
+    quality_steps = config.SCREENSHOT_QUALITY_STEPS
+    max_width = config.SCREENSHOT_MAX_WIDTH
+
+    # 高分屏缩放：宽度超过 max_width 时等比缩小
+    current = img
+    if current.width > max_width:
+        ratio = max_width / current.width
+        new_size = (max_width, int(current.height * ratio))
+        current = current.resize(new_size, Image.LANCZOS)
+        logger.debug(
+            f'缩放: {img.width}x{img.height} -> {new_size[0]}x{new_size[1]}'
+        )
+
+    # 依次尝试递降 quality
+    for quality in quality_steps:
+        current.save(file_path, 'JPEG', quality=quality)
+        file_size = os.path.getsize(file_path)
+        if file_size <= max_size:
+            return quality
+
+    # 所有 quality 档位仍超阈值：缩小 50% 再试一轮
+    if current.width > 480:
+        new_size = (current.width // 2, current.height // 2)
+        current = current.resize(new_size, Image.LANCZOS)
+        for quality in quality_steps:
+            current.save(file_path, 'JPEG', quality=quality)
+            if os.path.getsize(file_path) <= max_size:
+                return quality
+        logger.warning(
+            f'截图仍超阈值({config.SCREENSHOT_MAX_SIZE_KB}KB)，'
+            f'最终质量={quality_steps[-1]} 尺寸={new_size}'
+        )
+
+    return quality_steps[-1]
 
 
 class ScreenCollector:
@@ -72,11 +126,17 @@ class ScreenCollector:
                     )
                     try:
                         raw = sct.grab(monitor)
-                        # mss 返回 BGRA 像素缓冲，转 RGB 后保存为 JPEG
+                        # mss 返回 BGRA 像素缓冲，转 RGB
                         img = Image.frombytes(
                             'RGB', raw.size, raw.bgra, 'raw', 'BGRX'
                         )
-                        img.save(file_path, 'JPEG', quality=70)
+                        # 按阈值压缩保存
+                        quality = _save_with_size_limit(img, file_path)
+                        file_size_kb = os.path.getsize(file_path) / 1024
+                        logger.debug(
+                            f'显示器{idx} 截图已保存 q={quality} '
+                            f'{file_size_kb:.0f}KB'
+                        )
                         saved_paths.append(file_path)
                     except Exception as e:
                         # 单个屏幕失败不影响其他屏幕

@@ -45,8 +45,13 @@ export class SubscriptionService {
    * 通知所有订阅该设备的连接：有新截图上传
    * @param deviceId 设备 ID
    * @param screenshotUrl 截图访问 URL
+   * @param monitorIndex 显示器索引
    */
-  notifyScreenshotUploaded(deviceId: string, screenshotUrl: string): void {
+  notifyScreenshotUploaded(
+    deviceId: string,
+    screenshotUrl: string,
+    monitorIndex: number = 1,
+  ): void {
     const set = this.subscribers.get(deviceId);
     if (!set || set.size === 0) return;
 
@@ -54,6 +59,7 @@ export class SubscriptionService {
       type: 'screenshot' as const,
       deviceId,
       url: screenshotUrl,
+      monitor_index: monitorIndex,
       timestamp: new Date().toISOString(),
     });
 

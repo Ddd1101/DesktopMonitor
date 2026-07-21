@@ -121,7 +121,7 @@ export default async function agentScreenshotsRoutes(app: FastifyInstance): Prom
       const url = `/screenshots/${relativePath}`;
 
       // 推送给 WebSocket 订阅者
-      subscriptionService.notifyScreenshotUploaded(deviceId, url);
+      subscriptionService.notifyScreenshotUploaded(deviceId, url, monitorIndex);
 
       reply.send({ success: true, file_path: relativePath });
     },
