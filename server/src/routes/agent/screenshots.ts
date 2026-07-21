@@ -1,5 +1,7 @@
 import fs from 'node:fs';
+import { promises as fsp } from 'node:fs';
 import path from 'node:path';
+import { pipeline } from 'node:stream/promises';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { db } from '../../db/index.js';
@@ -93,16 +95,20 @@ export default async function agentScreenshotsRoutes(app: FastifyInstance): Prom
       const fileName = `${timestamp}_m${monitorIndex}.jpg`;
       const dir = path.join(config.screenshotsDir, deviceId, yyyyMMdd);
 
-      // 自动创建目录
-      if (!fs.existsSync(dir)) {
-        fs.mkdirSync(dir, { recursive: true });
-      }
+      // 自动创建目录（已存在不报错，省去 existsSync）
+      await fsp.mkdir(dir, { recursive: true });
 
       const filePath = path.join(dir, fileName);
 
-      // 将文件流读入 buffer 后写入磁盘
-      const buffer = await data.toBuffer();
-      fs.writeFileSync(filePath, buffer);
+      // 流式写盘，避免大文件全量读入内存
+      const writeStream = fs.createWriteStream(filePath);
+      try {
+        await pipeline(data.file, writeStream);
+      } catch (err) {
+        // 写盘失败时清理残留文件
+        try { await fsp.unlink(filePath); } catch {}
+        throw err;
+      }
 
       // 计算相对路径（使用正斜杠，便于跨平台 URL 构造）
       const relativePath = path
