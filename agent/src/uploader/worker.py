@@ -2,10 +2,13 @@
 
 UploadWorker 负责：
 1. 确保已注册（内存 token -> 本地凭证 -> 触发注册）
-2. 每轮上传最多 5 张截图、50 条事件
+2. 每轮上传截图（批量由 config.SCREENSHOT_BATCH 动态控制）、50 条事件
 3. 成功后删除本地记录；失败时 increment_retry，超过 10 次跳过
 4. 遇到 TokenExpiredError 自动重新注册并刷新凭证
 5. 每 60 秒发送一次心跳（与上传循环共享线程，避免多开线程）
+
+UPLOAD_INTERVAL 与 SCREENSHOT_BATCH 由 config 根据远端下发的
+SCREENSHOT_INTERVAL 自动计算，确保上传吞吐量 ≥ 采集吞吐量。
 """
 import os
 import platform
@@ -52,8 +55,6 @@ class UploadWorker:
 
     # 最大重试次数：超过则跳过该记录避免阻塞队列
     MAX_RETRY = 10
-    # 每轮上传截图批量
-    SCREENSHOT_BATCH = 5
     # 每轮上传事件批量
     EVENT_BATCH = 50
     # 并发上传线程数（截图上传为 I/O 密集型，多线程可提升吞吐）
@@ -71,12 +72,11 @@ class UploadWorker:
 
         Args:
             client: ServerClient 实例
-            interval: 上传轮询间隔（秒），默认 config.UPLOAD_INTERVAL
+            interval: 上传轮询间隔（秒），已废弃，由 config.UPLOAD_INTERVAL 动态控制
             screen_collector: ScreenCollector 实例引用，用于动态更新采集间隔；
                 为 None 时仅不更新采集间隔
         """
         self.client = client
-        self.interval = interval if interval is not None else config.UPLOAD_INTERVAL
         # 屏幕采集器引用（用于配置变化时更新采集间隔）
         self._screen_collector = screen_collector
         # 停止信号
@@ -167,7 +167,7 @@ class UploadWorker:
         """
         db = get_db()
         try:
-            rows = db.get_pending_screenshots(limit=self.SCREENSHOT_BATCH)
+            rows = db.get_pending_screenshots(limit=config.SCREENSHOT_BATCH)
         except Exception as e:
             logger.error(f'读取待上传截图失败: {e}', exc_info=True)
             return
@@ -402,9 +402,13 @@ class UploadWorker:
             logger.debug('远端配置无变化')
             return
 
-        logger.info(f'远端配置已应用: quality={config.SCREENSHOT_QUALITY_STEPS} '
-                    f'max_width={config.SCREENSHOT_MAX_WIDTH} '
-                    f'interval={config.SCREENSHOT_INTERVAL}s')
+        logger.info(
+            f'远端配置已应用: quality={config.SCREENSHOT_QUALITY_STEPS} '
+            f'max_width={config.SCREENSHOT_MAX_WIDTH} '
+            f'interval={config.SCREENSHOT_INTERVAL}s '
+            f'upload_interval={config.UPLOAD_INTERVAL}s '
+            f'batch={config.SCREENSHOT_BATCH}'
+        )
 
         # 配置变化时同步更新采集器间隔
         if self._screen_collector is not None:
@@ -416,7 +420,10 @@ class UploadWorker:
     # ----- 后台循环 -----
     def _loop(self) -> None:
         """后台上传循环。"""
-        logger.info(f'上传工作线程已启动，间隔 {self.interval} 秒')
+        logger.info(
+            f'上传工作线程已启动，间隔 {config.UPLOAD_INTERVAL} 秒，'
+            f'批量 {config.SCREENSHOT_BATCH}'
+        )
         # 启动后立即触发一次心跳
         self._last_heartbeat = time.monotonic() - self.HEARTBEAT_INTERVAL
         while not self._stop_event.is_set():
@@ -425,8 +432,8 @@ class UploadWorker:
             except Exception as e:
                 # 兜底：线程内任何异常都不应让线程崩溃
                 logger.error(f'上传循环异常: {e}', exc_info=True)
-            # 可中断的 sleep
-            self._stop_event.wait(self.interval)
+            # 可中断的 sleep（每轮读取 config，使远端配置变更即时生效）
+            self._stop_event.wait(config.UPLOAD_INTERVAL)
         logger.info('上传工作线程已停止')
 
     def start(self) -> None:

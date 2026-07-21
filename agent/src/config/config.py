@@ -22,14 +22,16 @@ class Config:
     AGENT_REGISTER_TOKEN = os.getenv('AGENT_REGISTER_TOKEN', 'change-me-please')
 
     # ----- 采集与上传调度 -----
-    # 截图采集间隔（秒）
+    # 截图采集间隔（秒）—— 由 server 远端配置动态覆盖
     SCREENSHOT_INTERVAL = int(os.getenv('SCREENSHOT_INTERVAL', '30'))
     # 活动窗口采样间隔（秒）
     WINDOW_SAMPLE_INTERVAL = float(os.getenv('WINDOW_SAMPLE_INTERVAL', '1'))
     # 活动事件聚合周期（秒）
     EVENT_AGGREGATE_INTERVAL = int(os.getenv('EVENT_AGGREGATE_INTERVAL', '30'))
-    # 上传器轮询间隔（秒）
-    UPLOAD_INTERVAL = int(os.getenv('UPLOAD_INTERVAL', '60'))
+    # 上传器轮询间隔（秒）—— 由 _recalculate_upload_params 根据 SCREENSHOT_INTERVAL 自动计算
+    UPLOAD_INTERVAL = 30
+    # 每轮上传截图批量 —— 由 _recalculate_upload_params 根据 SCREENSHOT_INTERVAL 自动计算
+    SCREENSHOT_BATCH = 10
 
     # ----- 截图压缩 -----
     # 截图大小阈值（KB），超过则自动降低清晰度重新压缩
@@ -58,6 +60,21 @@ class Config:
     # Agent 注册成功后保存的凭证文件
     CREDENTIALS_FILE = os.path.join(DATA_DIR, 'credentials.json')
 
+    def _recalculate_upload_params(self) -> None:
+        """根据 SCREENSHOT_INTERVAL 重新计算上传间隔与批量大小。
+
+        确保上传吞吐量 ≥ 采集吞吐量（假设最多 4 屏，含 2 倍冗余）：
+        - UPLOAD_INTERVAL: 取 SCREENSHOT_INTERVAL 与 30 的较小值，不小于 10s
+          → 采集越频繁，上传也越频繁
+        - SCREENSHOT_BATCH: 每轮上传覆盖的采集周期 × 4 屏 × 2 倍冗余，不小于 10
+          → 单轮即可清空一个上传间隔内产生的全部截图
+        """
+        self.UPLOAD_INTERVAL = max(10, min(self.SCREENSHOT_INTERVAL, 30))
+        # ceil(UPLOAD_INTERVAL / SCREENSHOT_INTERVAL) 的整数实现
+        cycles = (self.UPLOAD_INTERVAL + self.SCREENSHOT_INTERVAL - 1) // self.SCREENSHOT_INTERVAL
+        # 8 = 4屏 × 2倍冗余
+        self.SCREENSHOT_BATCH = max(10, cycles * 8)
+
     def apply_remote_config(self, remote: dict) -> bool:
         """根据远端配置更新本机配置项。
 
@@ -66,6 +83,9 @@ class Config:
 
         screenshot_quality 变化时，同步更新 SCREENSHOT_QUALITY_STEPS 为：
         [q, int(q*0.7), int(q*0.4), max(5, int(q*0.2))]
+
+        screenshot_interval_sec 变化时，同步重新计算 UPLOAD_INTERVAL 和
+        SCREENSHOT_BATCH，确保上传吞吐量适应新的采集频率。
 
         Args:
             remote: 远端配置 dict，应包含 screenshot_quality、
@@ -91,10 +111,11 @@ class Config:
             self.SCREENSHOT_MAX_WIDTH = int(max_width)
             changed = True
 
-        # 截图采集间隔
+        # 截图采集间隔 —— 变化时同步重算上传参数
         interval = remote.get('screenshot_interval_sec')
         if interval is not None and int(interval) != self.SCREENSHOT_INTERVAL:
             self.SCREENSHOT_INTERVAL = int(interval)
+            self._recalculate_upload_params()
             changed = True
 
         return changed
@@ -102,3 +123,5 @@ class Config:
 
 # 全局配置单例
 config = Config()
+# 根据初始 SCREENSHOT_INTERVAL 计算上传参数（确保启动时即为合理值）
+config._recalculate_upload_params()
