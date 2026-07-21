@@ -57,6 +57,21 @@ export interface Paginated<T> {
   total: number;
 }
 
+// 时间轴分桶聚合结果
+export interface TimelineBucket {
+  bucket_start: string;
+  count: number;
+  first_taken_at: string;
+  last_taken_at: string;
+}
+
+// 回放查询返回结构（带分页元信息）
+export interface PlaybackResult {
+  items: Screenshot[];
+  total: number;
+  hasMore: boolean;
+}
+
 /**
  * 管理员登录
  */
@@ -106,16 +121,36 @@ export async function getDeviceScreenshots(
 }
 
 /**
- * 获取回放截图（按时间范围，升序）
+ * 获取回放截图（按时间范围，升序，支持分页）
+ * 返回 PlaybackResult，包含 items/total/hasMore，便于增量加载
  */
 export async function getPlaybackScreenshots(
   deviceId: string,
   startTime: string,
   endTime: string,
-): Promise<Screenshot[]> {
-  const { data } = await apiClient.get<{ items: Screenshot[]; total: number }>(
+  limit?: number,
+  offset?: number,
+): Promise<PlaybackResult> {
+  const { data } = await apiClient.get<PlaybackResult>(
     `/admin/devices/${deviceId}/screenshots/playback`,
-    { params: { startTime, endTime } },
+    { params: { startTime, endTime, limit, offset } },
+  );
+  return data;
+}
+
+/**
+ * 获取回放时间轴摘要（按 bucketSec 分桶聚合）
+ * 用于在回放面板上绘制密度直方图，避免一次拉取全量截图
+ */
+export async function getPlaybackTimeline(
+  deviceId: string,
+  startTime: string,
+  endTime: string,
+  bucketSec?: number,
+): Promise<TimelineBucket[]> {
+  const { data } = await apiClient.get<{ items: TimelineBucket[] }>(
+    `/admin/devices/${deviceId}/screenshots/timeline`,
+    { params: { startTime, endTime, bucketSec } },
   );
   return data.items ?? [];
 }
@@ -133,6 +168,22 @@ export async function getDeviceEvents(
     { params: { page, pageSize } },
   );
   return data;
+}
+
+/**
+ * 按时间范围查询设备活动事件（升序，最多 1000 条）
+ * 复用 /events 接口，但传入 startTime/endTime 参数；用于回放面板叠加事件标记
+ */
+export async function getEventsByRange(
+  deviceId: string,
+  startTime: string,
+  endTime: string,
+): Promise<ActivityEvent[]> {
+  const { data } = await apiClient.get<{ items: ActivityEvent[] }>(
+    `/admin/devices/${deviceId}/events`,
+    { params: { startTime, endTime, pageSize: 1000 } },
+  );
+  return data.items ?? [];
 }
 
 /**
