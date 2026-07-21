@@ -12,6 +12,7 @@ import platform
 import socket
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional
 
 from src.collectors.screen import get_monitor_resolutions
@@ -55,6 +56,8 @@ class UploadWorker:
     SCREENSHOT_BATCH = 5
     # 每轮上传事件批量
     EVENT_BATCH = 50
+    # 并发上传线程数（截图上传为 I/O 密集型，多线程可提升吞吐）
+    UPLOAD_WORKERS = 3
     # 心跳间隔（秒）
     HEARTBEAT_INTERVAL = 60
 
@@ -136,8 +139,32 @@ class UploadWorker:
             return False
 
     # ----- 截图上传 -----
+    def _upload_one(self, row: dict) -> tuple[bool, Optional[Exception]]:
+        """上传单张截图（线程安全：仅读 client 状态，不修改）。
+
+        Returns:
+            (ok, exc)：exc 为 TokenExpiredError 时需外层触发重新注册
+        """
+        file_path = row['file_path']
+        taken_at = row['taken_at']
+        monitor_index = int(row.get('monitor_index', 1) or 1)
+        try:
+            ok = self.client.send_screenshot(
+                file_path, taken_at, monitor_index=monitor_index
+            )
+            return (ok, None)
+        except TokenExpiredError as e:
+            return (False, e)
+        except Exception as e:
+            logger.error(f'上传截图异常 id={row["id"]}: {e}', exc_info=True)
+            return (False, None)
+
     def _upload_screenshots(self) -> None:
-        """上传一批截图（最多 SCREENSHOT_BATCH 张）。"""
+        """上传一批截图（最多 SCREENSHOT_BATCH 张），并发上传。
+
+        使用线程池并发上传（I/O 密集型），上传完成后批量处理 DB 记录。
+        任一上传返回 401 时抛 TokenExpiredError 触发重新注册。
+        """
         db = get_db()
         try:
             rows = db.get_pending_screenshots(limit=self.SCREENSHOT_BATCH)
@@ -145,54 +172,82 @@ class UploadWorker:
             logger.error(f'读取待上传截图失败: {e}', exc_info=True)
             return
 
+        if not rows:
+            return
+
+        # 过滤超过最大重试次数的记录
+        pending: list[dict] = []
         for row in rows:
-            if self._stop_event.is_set():
-                break
-
-            row_id = row['id']
-            file_path = row['file_path']
-            taken_at = row['taken_at']
-            # monitor_index 字段可能因旧表而缺失，回退为 1
-            monitor_index = int(row.get('monitor_index', 1) or 1)
             retry = int(row.get('retry_count', 0) or 0)
-
-            # 超过最大重试次数则跳过该记录，避免阻塞队列
             if retry >= self.MAX_RETRY:
                 logger.warning(
-                    f'截图 id={row_id} 重试 {retry} 次仍失败，跳过'
+                    f'截图 id={row["id"]} 重试 {retry} 次仍失败，跳过'
                 )
                 continue
+            pending.append(row)
 
-            try:
-                ok = self.client.send_screenshot(
-                    file_path, taken_at, monitor_index=monitor_index
-                )
-            except TokenExpiredError:
-                # 抛给外层处理（触发重新注册）
-                raise
-            except Exception as e:
-                logger.error(f'上传截图异常 id={row_id}: {e}', exc_info=True)
-                ok = False
+        if not pending:
+            return
 
-            if ok:
+        # 并发上传
+        token_expired = False
+        success_ids: list[int] = []
+        success_paths: list[str] = []
+        fail_ids: list[int] = []
+
+        with ThreadPoolExecutor(
+            max_workers=self.UPLOAD_WORKERS, thread_name_prefix='Upload'
+        ) as executor:
+            future_to_row = {
+                executor.submit(self._upload_one, row): row for row in pending
+            }
+            for future in as_completed(future_to_row):
+                row = future_to_row[future]
+                row_id = row['id']
+                file_path = row['file_path']
                 try:
-                    db.delete_screenshot(row_id)
-                    # 删除本地截图文件，避免磁盘无限累积
-                    try:
-                        if file_path and os.path.exists(file_path):
-                            os.remove(file_path)
-                    except Exception as e:
-                        logger.warning(
-                            f'删除本地截图文件失败 id={row_id} path={file_path}: {e}'
-                        )
+                    ok, exc = future.result()
+                except Exception as e:
+                    logger.error(
+                        f'上传截图异常 id={row_id}: {e}', exc_info=True
+                    )
+                    ok, exc = False, None
+
+                if isinstance(exc, TokenExpiredError):
+                    token_expired = True
+
+                if ok:
+                    success_ids.append(row_id)
+                    success_paths.append(file_path)
                     logger.debug(f'截图上传成功 id={row_id}')
-                except Exception as e:
-                    logger.error(f'删除截图记录失败 id={row_id}: {e}')
-            else:
+                else:
+                    fail_ids.append(row_id)
+
+        # 批量处理 DB 记录（单事务，减少 fsync 次数）
+        if success_ids:
+            try:
+                db.delete_screenshots_batch(success_ids)
+            except Exception as e:
+                logger.error(f'批量删除截图记录失败: {e}', exc_info=True)
+            # 删除本地截图文件
+            for file_path in success_paths:
                 try:
-                    db.increment_retry('pending_screenshots', row_id)
+                    if file_path and os.path.exists(file_path):
+                        os.remove(file_path)
                 except Exception as e:
-                    logger.error(f'递增重试次数失败 id={row_id}: {e}')
+                    logger.warning(
+                        f'删除本地截图文件失败 path={file_path}: {e}'
+                    )
+
+        if fail_ids:
+            try:
+                db.increment_retry_batch('pending_screenshots', fail_ids)
+            except Exception as e:
+                logger.error(f'批量递增重试次数失败: {e}', exc_info=True)
+
+        # 任一上传返回 401，触发重新注册
+        if token_expired:
+            raise TokenExpiredError('截图上传返回 401')
 
     # ----- 事件上传 -----
     def _upload_events(self) -> None:
