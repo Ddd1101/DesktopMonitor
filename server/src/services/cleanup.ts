@@ -1,4 +1,4 @@
-import fs from 'node:fs';
+import { promises as fsp } from 'node:fs';
 import path from 'node:path';
 import dayjs from 'dayjs';
 import { db } from '../db/index.js';
@@ -10,6 +10,9 @@ const CLEANUP_INTERVAL_MS = 60 * 60 * 1000;
 // 默认保留：30 天
 const DEFAULT_RETENTION_VALUE = 30;
 const DEFAULT_RETENTION_UNIT: RetentionUnit = 'days';
+
+// 单设备每批处理的记录数（控制内存 + 让出事件循环）
+const BATCH_SIZE = 500;
 
 type RetentionUnit = 'hours' | 'days' | 'months' | 'years';
 
@@ -40,51 +43,87 @@ function computeCutoff(value: number, unit: RetentionUnit): string {
 
 /**
  * 删除指定设备在截止时间之前的截图记录及对应物理文件
+ * 采用流式 iterate + 分批处理，避免一次性载入大量行，并在每批之间让出事件循环
  * @returns 删除的记录数与文件数
  */
-function cleanupDeviceScreenshots(deviceId: string, cutoff: string): {
-  deletedRecords: number;
-  deletedFiles: number;
-} {
-  // 查询待删除的截图记录（含 file_path，用于物理文件删除）
+async function cleanupDeviceScreenshots(
+  deviceId: string,
+  cutoff: string,
+): Promise<{ deletedRecords: number; deletedFiles: number }> {
   const selectStmt = db.prepare(`
     SELECT id, device_id, file_path, taken_at
     FROM screenshots
     WHERE device_id = ? AND taken_at < ?
   `);
-  const rows = selectStmt.all(deviceId, cutoff) as ScreenshotRow[];
 
-  if (rows.length === 0) {
-    return { deletedRecords: 0, deletedFiles: 0 };
-  }
+  const deleteStmt = db.prepare('DELETE FROM screenshots WHERE id = ?');
 
-  // 收集所有待删除记录的 id（用于批量 DELETE）
-  const ids = rows.map((r) => r.id);
-
-  // 删除物理文件（容错：文件不存在或不可访问时跳过，不影响数据库清理）
+  let deletedRecords = 0;
   let deletedFiles = 0;
-  for (const row of rows) {
-    // file_path 是相对路径（如 deviceId/yyyyMMdd/xxx.jpg），拼接根目录得到绝对路径
-    const absPath = path.join(config.screenshotsDir, row.file_path);
-    try {
-      if (fs.existsSync(absPath)) {
-        fs.unlinkSync(absPath);
-        deletedFiles++;
-      }
-    } catch (err) {
-      // 文件删除失败不阻塞流程，仅记录日志
-      console.error(`[cleanup] 删除文件失败: ${absPath}`, err);
+  let batch: ScreenshotRow[] = [];
+
+  // 使用 iterate 流式遍历，避免一次性载入全部待删行
+  for (const row of selectStmt.iterate(deviceId, cutoff) as Iterable<ScreenshotRow>) {
+    batch.push(row);
+
+    if (batch.length >= BATCH_SIZE) {
+      const { recs, files } = await processBatch(batch, deleteStmt);
+      deletedRecords += recs;
+      deletedFiles += files;
+      batch = [];
+      // 让出事件循环，避免长时间阻塞心跳与上传请求
+      await new Promise((r) => setImmediate(r));
     }
   }
 
-  // 批量删除数据库记录
-  const deleteStmt = db.prepare(
-    `DELETE FROM screenshots WHERE id IN (${ids.map(() => '?').join(',')})`,
-  );
-  const result = deleteStmt.run(...ids) as { changes?: number };
-  const deletedRecords = result.changes ?? 0;
+  // 处理剩余不足一批的记录
+  if (batch.length > 0) {
+    const { recs, files } = await processBatch(batch, deleteStmt);
+    deletedRecords += recs;
+    deletedFiles += files;
+  }
 
   return { deletedRecords, deletedFiles };
+}
+
+/**
+ * 处理一批记录：异步删文件 + 同步删 DB 记录
+ */
+async function processBatch(
+  batch: ScreenshotRow[],
+  deleteStmt: ReturnType<typeof db.prepare>,
+): Promise<{ recs: number; files: number }> {
+  let recs = 0;
+  let files = 0;
+
+  // 并发删除物理文件（ENOENT 视为已删除）
+  await Promise.all(
+    batch.map(async (row) => {
+      const absPath = path.join(config.screenshotsDir, row.file_path);
+      try {
+        await fsp.unlink(absPath);
+        files++;
+      } catch (err: unknown) {
+        if (err instanceof Error && 'code' in err && err.code === 'ENOENT') {
+          // 文件已不存在，视为已删除
+        } else {
+          console.error(`[cleanup] 删除文件失败: ${absPath}`, err);
+        }
+      }
+    }),
+  );
+
+  // 同步删除 DB 记录（单条 DELETE，better-sqlite3 要求同步）
+  // 使用事务包裹批量删除，避免每条独立 fsync
+  const tx = db.transaction(() => {
+    for (const row of batch) {
+      const result = deleteStmt.run(row.id) as { changes?: number };
+      recs += result.changes ?? 0;
+    }
+  });
+  tx();
+
+  return { recs, files };
 }
 
 /**
@@ -92,7 +131,7 @@ function cleanupDeviceScreenshots(deviceId: string, cutoff: string): {
  * 1. 遍历所有 device_configs 记录，按各自保留策略清理
  * 2. 对于有截图但无配置的设备：使用默认保留 30 天
  */
-function runCleanup(): void {
+async function runCleanup(): Promise<void> {
   try {
     // 1. 有配置的设备：按各自策略清理
     const configStmt = db.prepare(
@@ -110,7 +149,7 @@ function runCleanup(): void {
         row.retention_value,
         row.retention_unit as RetentionUnit,
       );
-      const { deletedRecords, deletedFiles } = cleanupDeviceScreenshots(
+      const { deletedRecords, deletedFiles } = await cleanupDeviceScreenshots(
         row.device_id,
         cutoff,
       );
@@ -129,7 +168,7 @@ function runCleanup(): void {
     const allDeviceIds = unconfiguredStmt.all() as DeviceIdRow[];
     for (const { device_id } of allDeviceIds) {
       if (handledDeviceIds.has(device_id)) continue;
-      const { deletedRecords, deletedFiles } = cleanupDeviceScreenshots(
+      const { deletedRecords, deletedFiles } = await cleanupDeviceScreenshots(
         device_id,
         defaultCutoff,
       );
@@ -153,10 +192,10 @@ function runCleanup(): void {
  * 调用时机：buildApp 末尾，应用启动后调用
  */
 export function startCleanupService(): void {
-  // 启动时立即执行一次，清理过期数据
-  runCleanup();
+  // 启动时立即执行一次，清理过期数据（异步，不阻塞启动）
+  void runCleanup();
   // 周期性执行
   setInterval(() => {
-    runCleanup();
+    void runCleanup();
   }, CLEANUP_INTERVAL_MS);
 }
