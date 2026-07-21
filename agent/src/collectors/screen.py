@@ -61,11 +61,12 @@ def _save_with_size_limit(img: Image.Image, file_path: str) -> int:
     max_width = config.SCREENSHOT_MAX_WIDTH
 
     # 高分屏缩放：宽度超过 max_width 时等比缩小
+    # 使用 BILINEAR：屏幕截图以文字/UI 为主，BILINEAR 比 LANCZOS 快数倍且视觉差异极小
     current = img
     if current.width > max_width:
         ratio = max_width / current.width
         new_size = (max_width, int(current.height * ratio))
-        current = current.resize(new_size, Image.LANCZOS)
+        current = current.resize(new_size, Image.BILINEAR)
         logger.debug(
             f'缩放: {img.width}x{img.height} -> {new_size[0]}x{new_size[1]}'
         )
@@ -84,7 +85,7 @@ def _save_with_size_limit(img: Image.Image, file_path: str) -> int:
     # 所有 quality 档位仍超阈值：缩小 50% 再试一轮
     if chosen_buf is None and current.width > 480:
         new_size = (current.width // 2, current.height // 2)
-        current = current.resize(new_size, Image.LANCZOS)
+        current = current.resize(new_size, Image.BILINEAR)
         for quality in quality_steps:
             buf = BytesIO()
             current.save(buf, 'JPEG', quality=quality)
