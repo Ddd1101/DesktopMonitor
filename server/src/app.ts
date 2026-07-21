@@ -60,10 +60,13 @@ export async function buildApp(): Promise<FastifyInstance> {
   }
 
   // 注册静态文件服务插件：访问 /screenshots/* 时返回对应截图文件
+  // 截图文件名含时间戳+显示器索引，写入后不可变（INSERT OR IGNORE），可长期缓存
   await app.register(staticPlugin, {
     root: path.resolve(config.screenshotsDir),
     prefix: '/screenshots',
     decorateReply: false,
+    maxAge: 7 * 24 * 60 * 60 * 1000, // 7 天（毫秒）
+    immutable: true,
   });
 
   // 注册管理员路由
