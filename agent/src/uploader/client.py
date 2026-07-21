@@ -72,7 +72,7 @@ class ServerClient:
     # ----- 注册 -----
     def register(
         self, hostname: str, os_info: Optional[str] = None
-    ) -> tuple[str, str]:
+    ) -> tuple[str, str, Optional[str]]:
         """调用 POST /api/agent/register 完成注册。
 
         Args:
@@ -80,7 +80,7 @@ class ServerClient:
             os_info: 操作系统信息
 
         Returns:
-            (deviceId, token)
+            (deviceId, token, publicKey)；publicKey 可能为 None
 
         Raises:
             RuntimeError: 注册失败
@@ -116,12 +116,14 @@ class ServerClient:
         token = data.get('token')
         if not device_id or not token:
             raise RuntimeError(f'注册响应缺少 deviceId/token: {data}')
+        # 公钥用于截图加密（camelCase 或 snake_case 兼容）
+        public_key = data.get('publicKey') or data.get('public_key')
 
         # 注册成功，保存到内存（凭证持久化由调用方负责）
         self.set_token(token)
         self.set_device_id(device_id)
         logger.info(f'注册成功 deviceId={device_id}')
-        return (device_id, token)
+        return (device_id, token, public_key)
 
     # ----- 事件上报 -----
     def send_events(self, events: list[dict]) -> bool:
@@ -189,7 +191,11 @@ class ServerClient:
             # 使用上下文管理器确保文件句柄关闭
             with open(file_path, 'rb') as f:
                 files = {
-                    'file': (os.path.basename(file_path), f, 'image/jpeg'),
+                    'file': (
+                        os.path.basename(file_path),
+                        f,
+                        'application/octet-stream',
+                    ),
                 }
                 data = {
                     'taken_at': taken_at,

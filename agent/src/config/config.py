@@ -55,6 +55,8 @@ class Config:
     DB_PATH = os.path.join(DATA_DIR, 'agent.db')
     # 截图落盘目录
     SCREENSHOTS_DIR = os.path.join(DATA_DIR, 'screenshots')
+    # 截图本地保留时长（小时），超过则清理对应的日期目录
+    SCREENSHOT_LOCAL_RETENTION_HOURS = int(os.getenv('SCREENSHOT_LOCAL_RETENTION_HOURS', '24'))
 
     # ----- Agent 凭证持久化 -----
     # Agent 注册成功后保存的凭证文件

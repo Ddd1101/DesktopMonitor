@@ -1,4 +1,6 @@
 import crypto from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { db } from '../../db/index.js';
@@ -66,6 +68,10 @@ export default async function agentRegisterRoutes(app: FastifyInstance): Promise
     // 使用 Agent 独立 secret 签发 JWT，便于后续单独吊销
     const token = signAgentJwt({ deviceId }, jwtSecret);
 
-    reply.send({ deviceId, token });
+    // 读取 RSA 公钥返回给 Agent（注册是低频操作，同步读取即可）
+    const publicKeyPath = path.join(config.dataDir, 'rsa_public.pem');
+    const publicKey = fs.readFileSync(publicKeyPath, 'utf8');
+
+    reply.send({ deviceId, token, publicKey });
   });
 }

@@ -241,6 +241,41 @@ class Database:
             rows = cur.fetchall()
             return [dict(row) for row in rows]
 
+    def get_overretry_screenshots(self, max_retry: int) -> list[dict]:
+        """查询重试次数已达上限的待上报截图记录。
+
+        Args:
+            max_retry: 重试次数上限阈值
+
+        Returns:
+            字典列表，每条包含 id, file_path, taken_at, monitor_index,
+            created_at, retry_count（其中 retry_count >= max_retry）
+        """
+        with self._lock:
+            cur = self._conn.cursor()
+            cur.execute(
+                """
+                SELECT id, file_path, taken_at, monitor_index,
+                       created_at, retry_count
+                FROM pending_screenshots
+                WHERE retry_count >= ?
+                """,
+                (max_retry,),
+            )
+            rows = cur.fetchall()
+            return [dict(row) for row in rows]
+
+    def get_all_screenshot_paths(self) -> set[str]:
+        """返回所有待上报截图的 file_path 集合。
+
+        Returns:
+            所有 pending_screenshots 记录的 file_path 集合
+        """
+        with self._lock:
+            cur = self._conn.cursor()
+            cur.execute('SELECT file_path FROM pending_screenshots')
+            return {row['file_path'] for row in cur.fetchall()}
+
     def delete_event(self, event_id: int) -> None:
         """根据 id 删除一条待上报事件。"""
         with self._lock:
@@ -297,6 +332,30 @@ class Database:
                     ids,
                 )
                 cur.execute('COMMIT')
+            except Exception:
+                cur.execute('ROLLBACK')
+                raise
+
+    def delete_screenshots_by_path_prefix(self, path_prefix: str) -> int:
+        """删除 file_path 以指定前缀开头的待上报截图记录。
+
+        Args:
+            path_prefix: file_path 前缀（如某个日期目录的绝对路径）
+
+        Returns:
+            删除的记录数量
+        """
+        with self._lock:
+            cur = self._conn.cursor()
+            try:
+                cur.execute('BEGIN')
+                cur.execute(
+                    'DELETE FROM pending_screenshots WHERE file_path LIKE ?',
+                    (path_prefix + '%',),
+                )
+                deleted = cur.rowcount
+                cur.execute('COMMIT')
+                return int(deleted) if deleted else 0
             except Exception:
                 cur.execute('ROLLBACK')
                 raise

@@ -112,8 +112,8 @@ class Agent:
         try:
             hostname = socket.gethostname()
             os_info = platform.platform()
-            device_id, token = self.client.register(hostname, os_info)
-            save_credentials(device_id, token)
+            device_id, token, public_key = self.client.register(hostname, os_info)
+            save_credentials(device_id, token, public_key)
             logger.info(f'注册成功，设备ID: {device_id}')
         except Exception as e:
             logger.error(f'注册失败: {e}')

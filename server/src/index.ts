@@ -1,5 +1,6 @@
 import { buildApp } from './app.js';
 import { config } from './config/index.js';
+import { ensureKeyPair } from './utils/rsa.js';
 
 /**
  * 服务端启动入口
@@ -14,6 +15,9 @@ async function main(): Promise<void> {
   const app = await buildApp();
 
   try {
+    // 初始化 RSA 密钥对（若不存在则生成）
+    ensureKeyPair();
+
     // 监听端口，绑定到所有网卡以便容器/局域网访问
     await app.listen({
       port: config.port,

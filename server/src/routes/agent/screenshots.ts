@@ -1,13 +1,14 @@
-import fs from 'node:fs';
+import crypto from 'node:crypto';
 import { promises as fsp } from 'node:fs';
 import path from 'node:path';
-import { pipeline } from 'node:stream/promises';
+import { buffer as streamToBuffer } from 'node:stream/consumers';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { db } from '../../db/index.js';
 import { config } from '../../config/index.js';
 import { verifyAgentAuth } from '../../utils/agentAuth.js';
 import { subscriptionService } from '../../services/subscription.js';
+import { ensureKeyPair } from '../../utils/rsa.js';
 
 // 预编译语句（模块级复用，避免每次上传都 prepare）
 const stmtInsertScreenshot = db.prepare(`
@@ -18,6 +19,16 @@ const stmtInsertScreenshot = db.prepare(`
 
 // taken_at 字段校验：非空字符串
 const takenAtSchema = z.string().min(1);
+
+// 模块级延迟加载私钥（首次请求时加载）
+let privateKeyCache: crypto.KeyObject | null = null;
+
+function getPrivateKey(): crypto.KeyObject {
+  if (privateKeyCache === null) {
+    privateKeyCache = ensureKeyPair().privateKey;
+  }
+  return privateKeyCache;
+}
 
 /**
  * 从 @fastify/multipart 的 fields 对象中提取文本字段值
@@ -54,16 +65,10 @@ export default async function agentScreenshotsRoutes(app: FastifyInstance): Prom
     async (request, reply) => {
       const deviceId = request.agent!.deviceId;
 
-      // 接收 multipart 文件
+      // 接收 multipart 文件（任意二进制数据，application/octet-stream）
       const data = await request.file();
       if (!data) {
         reply.code(400).send({ error: '未提供文件' });
-        return;
-      }
-
-      // 校验文件类型为图片
-      if (!data.mimetype || !data.mimetype.startsWith('image/')) {
-        reply.code(400).send({ error: '文件类型不合法，必须是图片' });
         return;
       }
 
@@ -107,15 +112,32 @@ export default async function agentScreenshotsRoutes(app: FastifyInstance): Prom
 
       const filePath = path.join(dir, fileName);
 
-      // 流式写盘，避免大文件全量读入内存
-      const writeStream = fs.createWriteStream(filePath);
-      try {
-        await pipeline(data.file, writeStream);
-      } catch (err) {
-        // 写盘失败时清理残留文件
-        try { await fsp.unlink(filePath); } catch {}
-        throw err;
-      }
+      // 读取完整上传的 Buffer 数据
+      const encryptedBuffer = await streamToBuffer(data.file);
+
+      // 解析文件格式：[4字节大端RSA块长度][RSA加密块][AES加密数据]
+      const rsaBlockLength = encryptedBuffer.readUInt32BE(0);
+      const rsaBlock = encryptedBuffer.subarray(4, 4 + rsaBlockLength);
+      const aesData = encryptedBuffer.subarray(4 + rsaBlockLength);
+
+      // RSA-OAEP 解密 RSA 块，得到 48 字节（32字节 AES 密钥 + 16字节 IV）
+      const aesKeyMaterial = crypto.privateDecrypt(
+        {
+          key: getPrivateKey(),
+          padding: crypto.constants.RSA_PKCS1_OAEP_PADDING,
+          oaepHash: 'sha256',
+        },
+        rsaBlock,
+      );
+      const aesKey = aesKeyMaterial.subarray(0, 32);
+      const iv = aesKeyMaterial.subarray(32, 48);
+
+      // AES-256-CBC 解密 AES 数据，得到原始 JPEG（Node.js crypto 自动处理 PKCS7 padding）
+      const decipher = crypto.createDecipheriv('aes-256-cbc', aesKey, iv);
+      const jpegBuffer = Buffer.concat([decipher.update(aesData), decipher.final()]);
+
+      // 解密后的 JPEG 落盘
+      await fsp.writeFile(filePath, jpegBuffer);
 
       // 计算相对路径（使用正斜杠，便于跨平台 URL 构造）
       const relativePath = path

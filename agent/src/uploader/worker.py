@@ -12,10 +12,12 @@ SCREENSHOT_INTERVAL 自动计算，确保上传吞吐量 ≥ 采集吞吐量。
 """
 import os
 import platform
+import shutil
 import socket
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timedelta
 from typing import Optional
 
 from src.collectors.screen import get_monitor_resolutions
@@ -61,6 +63,9 @@ class UploadWorker:
     UPLOAD_WORKERS = 3
     # 心跳间隔（秒）
     HEARTBEAT_INTERVAL = 60
+    # 孤儿文件清理宽限期（秒）：文件修改时间距今不足此值的视为"采集中"
+    # 不删除，避免清理任务误删 ScreenCollector 刚落盘但尚未写入 DB 的截图
+    ORPHAN_GRACE_SECONDS = 300
 
     def __init__(
         self,
@@ -84,6 +89,8 @@ class UploadWorker:
         self._thread: Optional[threading.Thread] = None
         # 心跳时间戳（monotonic）
         self._last_heartbeat: float = 0.0
+        # 上传轮次计数（用于周期性触发清理任务）
+        self._upload_rounds = 0
 
     # ----- 注册 / 重新注册 -----
     def _ensure_registered(self) -> bool:
@@ -109,8 +116,8 @@ class UploadWorker:
         try:
             hostname = platform.node()
             os_info = _get_os_info()
-            device_id, token = self.client.register(hostname=hostname, os_info=os_info)
-            save_credentials(device_id, token)
+            device_id, token, public_key = self.client.register(hostname=hostname, os_info=os_info)
+            save_credentials(device_id, token, public_key)
             logger.info('首次注册完成并已保存凭证')
             return True
         except Exception as e:
@@ -130,8 +137,8 @@ class UploadWorker:
         try:
             hostname = platform.node()
             os_info = _get_os_info()
-            device_id, token = self.client.register(hostname=hostname, os_info=os_info)
-            save_credentials(device_id, token)
+            device_id, token, public_key = self.client.register(hostname=hostname, os_info=os_info)
+            save_credentials(device_id, token, public_key)
             logger.info('重新注册成功')
             return True
         except Exception as e:
@@ -417,6 +424,159 @@ class UploadWorker:
             except Exception as e:
                 logger.error(f'更新采集间隔异常: {e}', exc_info=True)
 
+    # ----- 文件清理 -----
+    def _cleanup_files(self) -> None:
+        """清理超限记录、孤儿文件与过期目录。
+
+        清理步骤：
+        1. 查询 retry_count >= MAX_RETRY 的 pending_screenshots 记录
+        2. 删除这些记录对应的本地文件
+        3. 调用 db.delete_screenshots_batch() 删除 DB 记录
+        4. 查询所有 pending_screenshots 的 file_path 集合
+        5. 扫描 SCREENSHOTS_DIR 下所有文件（递归），对比 file_path 集合
+        6. 删除不在集合中的孤儿文件
+        7. 删除空目录
+        8. 日志记录删除的文件数量
+        9. 追加过期目录清理：删除日期距今超过
+           SCREENSHOT_LOCAL_RETENTION_HOURS 小时的日期目录
+        """
+        db = get_db()
+
+        # 1. 查询 retry_count >= MAX_RETRY 的 pending_screenshots 记录
+        try:
+            overretry = db.get_overretry_screenshots(self.MAX_RETRY)
+        except Exception as e:
+            logger.error(f'查询超限截图记录失败: {e}', exc_info=True)
+            overretry = []
+
+        overretry_file_count = 0
+        # 2. 删除这些记录对应的本地文件
+        for row in overretry:
+            file_path = row.get('file_path')
+            if file_path:
+                try:
+                    if os.path.exists(file_path):
+                        os.remove(file_path)
+                        overretry_file_count += 1
+                except Exception as e:
+                    logger.warning(
+                        f'删除超限截图文件失败 path={file_path}: {e}'
+                    )
+
+        # 3. 调用 db.delete_screenshots_batch() 删除 DB 记录
+        if overretry:
+            try:
+                db.delete_screenshots_batch(
+                    [row['id'] for row in overretry]
+                )
+            except Exception as e:
+                logger.error(
+                    f'批量删除超限截图记录失败: {e}', exc_info=True
+                )
+
+        # 4. 查询所有 pending_screenshots 的 file_path 集合
+        try:
+            valid_paths = db.get_all_screenshot_paths()
+        except Exception as e:
+            logger.error(f'查询截图路径集合失败: {e}', exc_info=True)
+            valid_paths = set()
+
+        # 5. 扫描 SCREENSHOTS_DIR 下所有文件（递归），对比 file_path 集合
+        # 6. 删除不在集合中的孤儿文件（跳过修改时间在宽限期内的文件，
+        #    避免 ScreenCollector 刚落盘但尚未写入 DB 的截图被误删）
+        orphan_count = 0
+        skipped_grace = 0
+        screenshots_dir = config.SCREENSHOTS_DIR
+        now_ts = time.time()
+        if os.path.isdir(screenshots_dir):
+            for root, _dirs, files in os.walk(screenshots_dir):
+                for fname in files:
+                    fpath = os.path.join(root, fname)
+                    if fpath in valid_paths:
+                        continue
+                    # 宽限期检查：文件修改时间距今不足 ORPHAN_GRACE_SECONDS
+                    # 的视为"采集中"，跳过删除避免竞态条件
+                    try:
+                        mtime = os.path.getmtime(fpath)
+                    except OSError:
+                        mtime = now_ts
+                    if now_ts - mtime < self.ORPHAN_GRACE_SECONDS:
+                        skipped_grace += 1
+                        continue
+                    try:
+                        os.remove(fpath)
+                        orphan_count += 1
+                    except Exception as e:
+                        logger.warning(
+                            f'删除孤儿文件失败 path={fpath}: {e}'
+                        )
+
+        # 7. 删除空目录（自底向上，os.rmdir 仅在目录为空时删除）
+        if os.path.isdir(screenshots_dir):
+            for root, dirs, _files in os.walk(screenshots_dir, topdown=False):
+                for dname in dirs:
+                    dpath = os.path.join(root, dname)
+                    try:
+                        os.rmdir(dpath)
+                    except OSError:
+                        pass  # 目录非空，跳过
+
+        # 8. 日志记录删除的文件数量
+        logger.info(
+            f'清理完成: 超限文件 {overretry_file_count} 个, '
+            f'孤儿文件 {orphan_count} 个, '
+            f'宽限期内跳过 {skipped_grace} 个'
+        )
+
+        # 9. 追加过期目录清理
+        expired_count = 0
+        try:
+            now = datetime.now()
+            retention = timedelta(
+                hours=config.SCREENSHOT_LOCAL_RETENTION_HOURS
+            )
+            if os.path.isdir(screenshots_dir):
+                for name in os.listdir(screenshots_dir):
+                    date_dir = os.path.join(screenshots_dir, name)
+                    if not os.path.isdir(date_dir):
+                        continue
+                    # 仅处理 YYYYMMDD 格式的日期目录
+                    try:
+                        dir_date = datetime.strptime(name, '%Y%m%d')
+                    except ValueError:
+                        continue
+                    if now - dir_date <= retention:
+                        continue
+                    # 删除该目录下所有文件对应的 pending_screenshots 记录
+                    try:
+                        deleted_records = db.delete_screenshots_by_path_prefix(
+                            date_dir
+                        )
+                    except Exception as e:
+                        logger.error(
+                            f'删除过期目录记录失败 dir={date_dir}: {e}',
+                            exc_info=True,
+                        )
+                        deleted_records = 0
+                    # 用 shutil.rmtree 整体删除该目录
+                    try:
+                        shutil.rmtree(date_dir)
+                        expired_count += 1
+                        logger.info(
+                            f'已清理过期截图目录: {name} '
+                            f'(删除记录 {deleted_records} 条)'
+                        )
+                    except Exception as e:
+                        logger.error(
+                            f'删除过期目录失败 dir={date_dir}: {e}',
+                            exc_info=True,
+                        )
+        except Exception as e:
+            logger.error(f'过期目录清理异常: {e}', exc_info=True)
+
+        if expired_count:
+            logger.info(f'过期目录清理完成: 共 {expired_count} 个')
+
     # ----- 后台循环 -----
     def _loop(self) -> None:
         """后台上传循环。"""
@@ -426,9 +586,18 @@ class UploadWorker:
         )
         # 启动后立即触发一次心跳
         self._last_heartbeat = time.monotonic() - self.HEARTBEAT_INTERVAL
+        # 进入循环前先清理一次历史残留
+        try:
+            self._cleanup_files()
+        except Exception as e:
+            logger.error(f'启动清理异常: {e}', exc_info=True)
         while not self._stop_event.is_set():
             try:
                 self.run_once()
+                self._upload_rounds += 1
+                # 每 10 轮上传后执行一次清理
+                if self._upload_rounds % 10 == 0:
+                    self._cleanup_files()
             except Exception as e:
                 # 兜底：线程内任何异常都不应让线程崩溃
                 logger.error(f'上传循环异常: {e}', exc_info=True)

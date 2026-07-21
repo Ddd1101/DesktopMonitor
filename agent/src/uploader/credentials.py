@@ -17,7 +17,8 @@ def load_credentials() -> Optional[dict]:
     """从 CREDENTIALS_FILE 读取凭证。
 
     Returns:
-        {'device_id': str, 'token': str}；文件不存在或格式错误时返回 None
+        {'device_id': str, 'token': str, 'public_key': Optional[str]}；
+        文件不存在或格式错误时返回 None
     """
     cred_path = config.CREDENTIALS_FILE
     if not os.path.exists(cred_path):
@@ -29,6 +30,7 @@ def load_credentials() -> Optional[dict]:
             return {
                 'device_id': data['device_id'],
                 'token': data['token'],
+                'public_key': data.get('public_key'),
             }
         logger.warning('凭证文件格式不正确，忽略')
         return None
@@ -37,12 +39,17 @@ def load_credentials() -> Optional[dict]:
         return None
 
 
-def save_credentials(device_id: str, token: str) -> None:
+def save_credentials(
+    device_id: str,
+    token: str,
+    public_key: Optional[str] = None,
+) -> None:
     """将凭证保存到 JSON 文件。
 
     Args:
         device_id: 设备 ID
         token: JWT token
+        public_key: 可选，服务端 RSA 公钥 PEM 字符串，用于截图加密
     """
     cred_path = config.CREDENTIALS_FILE
     try:
@@ -50,13 +57,11 @@ def save_credentials(device_id: str, token: str) -> None:
         cred_dir = os.path.dirname(cred_path)
         if cred_dir:
             os.makedirs(cred_dir, exist_ok=True)
+        cred_data: dict = {'device_id': device_id, 'token': token}
+        if public_key:
+            cred_data['public_key'] = public_key
         with open(cred_path, 'w', encoding='utf-8') as f:
-            json.dump(
-                {'device_id': device_id, 'token': token},
-                f,
-                ensure_ascii=False,
-                indent=2,
-            )
+            json.dump(cred_data, f, ensure_ascii=False, indent=2)
         logger.debug('凭证已保存')
     except OSError as e:
         logger.error(f'保存凭证失败: {e}')
