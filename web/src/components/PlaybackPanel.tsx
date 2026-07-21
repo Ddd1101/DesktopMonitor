@@ -52,6 +52,8 @@ export default function PlaybackPanel({ deviceId }: { deviceId: string }) {
   const [currentIdx, setCurrentIdx] = useState(0);
   const [speed, setSpeed] = useState(1);
   const playTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // ref 持有最新 frames，供定时器回调读取，避免 frames 变化导致定时器重建
+  const framesRef = useRef<PlaybackFrame[]>([]);
 
   // 加载回放数据
   const loadPlayback = useCallback(async () => {
@@ -97,14 +99,19 @@ export default function PlaybackPanel({ deviceId }: { deviceId: string }) {
     }
   }, [deviceId, timeRange]);
 
+  // 同步 framesRef，供定时器回调读取最新帧数
+  useEffect(() => {
+    framesRef.current = frames;
+  }, [frames]);
+
   // 播放/暂停控制
   useEffect(() => {
-    if (playing && frames.length > 0) {
+    if (playing && framesRef.current.length > 0) {
       // 基础间隔 2 秒/帧，倍速越高间隔越短
       const interval = 2000 / speed;
       playTimerRef.current = setInterval(() => {
         setCurrentIdx((prev) => {
-          if (prev >= frames.length - 1) {
+          if (prev >= framesRef.current.length - 1) {
             // 播放到最后一帧，自动停止
             setPlaying(false);
             return prev;
@@ -124,7 +131,7 @@ export default function PlaybackPanel({ deviceId }: { deviceId: string }) {
         playTimerRef.current = null;
       }
     };
-  }, [playing, frames, speed]);
+  }, [playing, speed]);
 
   // 组件卸载时清理定时器
   useEffect(() => {
