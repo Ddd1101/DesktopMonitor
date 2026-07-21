@@ -224,8 +224,16 @@ class ServerClient:
         hostname: Optional[str] = None,
         ip: Optional[str] = None,
         os_info: Optional[str] = None,
+        monitor_resolutions: Optional[list[dict]] = None,
     ) -> bool:
         """调用 POST /api/agent/heartbeat 发送心跳。
+
+        Args:
+            hostname: 主机名
+            ip: 本机内网 IP
+            os_info: 操作系统信息
+            monitor_resolutions: 各显示器分辨率列表，
+                形如 [{"width": 1920, "height": 1080}, ...]；为 None 时不携带该字段
 
         Returns:
             True 表示成功；False 表示业务失败（非 401）
@@ -243,6 +251,9 @@ class ServerClient:
             'os_info': os_info or '',
             'osInfo': os_info or '',
         }
+        if monitor_resolutions is not None:
+            payload['monitor_resolutions'] = monitor_resolutions
+            payload['monitorResolutions'] = monitor_resolutions
         try:
             resp = self._session.post(
                 url, json=payload, timeout=self.REQUEST_TIMEOUT
@@ -259,3 +270,44 @@ class ServerClient:
             )
             return False
         return True
+
+    # ----- 远端配置拉取 -----
+    def get_remote_config(self) -> Optional[dict]:
+        """调用 GET /api/agent/config 拉取远端配置。
+
+        Returns:
+            config dict（响应中的 config 字段）；失败时返回 None
+
+        Raises:
+            TokenExpiredError: 401 时抛出
+        """
+        if not self._token:
+            raise TokenExpiredError('未设置 token')
+
+        url = f'{self.base_url}/api/agent/config'
+        try:
+            resp = self._session.get(url, timeout=self.REQUEST_TIMEOUT)
+        except requests.RequestException as e:
+            logger.error(f'拉取远端配置网络异常: {e}')
+            return None
+
+        if resp.status_code == 401:
+            raise TokenExpiredError('拉取远端配置返回 401')
+        if resp.status_code != 200:
+            logger.error(
+                f'拉取远端配置失败 status={resp.status_code} '
+                f'body={resp.text[:200]}'
+            )
+            return None
+
+        try:
+            data = resp.json()
+        except ValueError:
+            logger.error('拉取远端配置响应非 JSON')
+            return None
+
+        config_data = data.get('config')
+        if not isinstance(config_data, dict):
+            logger.error(f'远端配置响应缺少 config 字段: {data}')
+            return None
+        return config_data

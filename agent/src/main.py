@@ -91,7 +91,9 @@ class Agent:
         self.window_collector = WindowCollector()
 
         # 4. 初始化上传器（内部会处理 token 失效后的重新注册）
-        self.upload_worker = UploadWorker(self.client)
+        self.upload_worker = UploadWorker(
+            self.client, screen_collector=self.screen_collector
+        )
 
     def _ensure_registered(self) -> None:
         """检查本地凭证，未注册则调用服务端注册。

@@ -132,3 +132,44 @@ export async function getDashboard(): Promise<DashboardData> {
   const { data } = await apiClient.get<DashboardData>('/admin/dashboard');
   return data;
 }
+
+// 设备配置
+export interface DeviceConfig {
+  screenshot_quality: number;
+  screenshot_max_width: number;
+  screenshot_interval_sec: number;
+  retention_value: number;
+  retention_unit: 'hours' | 'days' | 'months' | 'years';
+  updated_at: string;
+}
+
+export interface DeviceConfigResponse {
+  config: DeviceConfig;
+  monitor_resolutions: { width: number; height: number }[];
+}
+
+/**
+ * 获取设备配置
+ */
+export async function getDeviceConfig(
+  deviceId: string,
+): Promise<DeviceConfigResponse> {
+  const { data } = await apiClient.get<DeviceConfigResponse>(
+    `/admin/devices/${deviceId}/config`,
+  );
+  return data;
+}
+
+/**
+ * 更新设备配置
+ */
+export async function updateDeviceConfig(
+  deviceId: string,
+  config: Partial<DeviceConfig>,
+): Promise<DeviceConfig> {
+  const { data } = await apiClient.put<{ success: boolean; config: DeviceConfig }>(
+    `/admin/devices/${deviceId}/config`,
+    config,
+  );
+  return data.config;
+}

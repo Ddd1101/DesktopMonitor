@@ -13,6 +13,7 @@ import threading
 import time
 from typing import Optional
 
+from src.collectors.screen import get_monitor_resolutions
 from src.config.config import config
 from src.storage.db import get_db
 from src.uploader.client import ServerClient, TokenExpiredError
@@ -60,15 +61,20 @@ class UploadWorker:
         self,
         client: ServerClient,
         interval: Optional[int] = None,
+        screen_collector: Optional['ScreenCollector'] = None,
     ) -> None:
         """初始化上传工作线程。
 
         Args:
             client: ServerClient 实例
             interval: 上传轮询间隔（秒），默认 config.UPLOAD_INTERVAL
+            screen_collector: ScreenCollector 实例引用，用于动态更新采集间隔；
+                为 None 时仅不更新采集间隔
         """
         self.client = client
         self.interval = interval if interval is not None else config.UPLOAD_INTERVAL
+        # 屏幕采集器引用（用于配置变化时更新采集间隔）
+        self._screen_collector = screen_collector
         # 停止信号
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
@@ -239,20 +245,30 @@ class UploadWorker:
                     logger.error(f'递增重试次数失败 id={row["id"]}: {e}')
 
     # ----- 心跳 -----
-    def _send_heartbeat(self) -> None:
-        """发送一次心跳。"""
+    def _send_heartbeat(self) -> bool:
+        """发送一次心跳，并附带本机显示器分辨率。
+
+        Returns:
+            True 表示心跳发送成功；False 表示失败（非 401）
+
+        Raises:
+            TokenExpiredError: 401 时抛出
+        """
         try:
             ok = self.client.heartbeat(
                 hostname=platform.node(),
                 ip=_get_local_ip(),
                 os_info=_get_os_info(),
+                monitor_resolutions=get_monitor_resolutions(),
             )
             if ok:
                 logger.debug('心跳发送成功')
+            return ok
         except TokenExpiredError:
             raise
         except Exception as e:
             logger.error(f'心跳异常: {e}', exc_info=True)
+            return False
 
     # ----- 单轮执行 -----
     def run_once(self) -> None:
@@ -275,16 +291,59 @@ class UploadWorker:
             self._re_register()
             return
 
-        # 4. 心跳（每 HEARTBEAT_INTERVAL 秒发一次）
+        # 4. 心跳（每 HEARTBEAT_INTERVAL 秒发一次），成功后拉取远端配置
         now = time.monotonic()
         if now - self._last_heartbeat >= self.HEARTBEAT_INTERVAL:
             try:
-                self._send_heartbeat()
-                self._last_heartbeat = now
+                ok = self._send_heartbeat()
             except TokenExpiredError:
                 if self._re_register():
                     self._last_heartbeat = now
                 return
+            if ok:
+                self._last_heartbeat = now
+                # 心跳成功后拉取并应用远端配置（与心跳同频）
+                self._pull_and_apply_remote_config()
+
+    def _pull_and_apply_remote_config(self) -> None:
+        """拉取远端配置并应用：如有变化，同步更新采集间隔。
+
+        拉取失败（除 401 外）静默忽略，下一轮心跳后重试。
+        """
+        try:
+            remote = self.client.get_remote_config()
+        except TokenExpiredError:
+            # token 失效，触发重新注册（下一轮重新拉取）
+            logger.info('拉取远端配置时 token 失效，将触发重新注册')
+            self._re_register()
+            return
+        except Exception as e:
+            logger.error(f'拉取远端配置异常: {e}', exc_info=True)
+            return
+
+        if not remote:
+            return
+
+        try:
+            changed = config.apply_remote_config(remote)
+        except Exception as e:
+            logger.error(f'应用远端配置异常: {e}', exc_info=True)
+            return
+
+        if not changed:
+            logger.debug('远端配置无变化')
+            return
+
+        logger.info(f'远端配置已应用: quality={config.SCREENSHOT_QUALITY_STEPS} '
+                    f'max_width={config.SCREENSHOT_MAX_WIDTH} '
+                    f'interval={config.SCREENSHOT_INTERVAL}s')
+
+        # 配置变化时同步更新采集器间隔
+        if self._screen_collector is not None:
+            try:
+                self._screen_collector.update_interval(config.SCREENSHOT_INTERVAL)
+            except Exception as e:
+                logger.error(f'更新采集间隔异常: {e}', exc_info=True)
 
     # ----- 后台循环 -----
     def _loop(self) -> None:

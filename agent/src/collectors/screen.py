@@ -19,6 +19,25 @@ from src.utils.logger import get_logger
 logger = get_logger(__name__)
 
 
+def get_monitor_resolutions() -> list[dict]:
+    """获取本机所有物理显示器的分辨率。
+
+    使用 mss.mss().monitors[1:] 获取各物理显示器（monitors[0] 是合并虚拟区域）。
+
+    Returns:
+        形如 [{"width": 1920, "height": 1080}, ...]；异常时返回空列表
+    """
+    try:
+        with mss.mss() as sct:
+            monitors = sct.monitors[1:]
+            return [
+                {'width': m['width'], 'height': m['height']} for m in monitors
+            ]
+    except Exception as e:
+        logger.error(f'获取显示器分辨率失败: {e}', exc_info=True)
+        return []
+
+
 def _save_with_size_limit(img: Image.Image, file_path: str) -> int:
     """将图片保存为 JPEG，若超过大小阈值则逐步降低清晰度重新压缩。
 
@@ -193,3 +212,17 @@ class ScreenCollector:
         if self._thread:
             self._thread.join(timeout=5)
             self._thread = None
+
+    def update_interval(self, new_interval: int) -> None:
+        """动态更新采集间隔。
+
+        下一次 _loop 中的 wait 调用会自动使用新值。
+
+        Args:
+            new_interval: 新的采集间隔（秒）
+        """
+        if new_interval == self.interval:
+            return
+        old = self.interval
+        self.interval = new_interval
+        logger.info(f'采集间隔已更新: {old}s -> {new_interval}s')

@@ -1,16 +1,19 @@
 // 设备列表页：表格展示所有设备，支持刷新与跳转详情
 import { useEffect, useState } from 'react';
-import { Button, Card, Spin, Table, Tag } from 'antd';
+import { Button, Card, Space, Spin, Table, Tag } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { ReloadOutlined } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import dayjs from 'dayjs';
 import { getDevices, type Device } from '../api/admin';
+import DeviceConfigModal from '../components/DeviceConfigModal';
 
 export default function Devices() {
   const navigate = useNavigate();
   const [devices, setDevices] = useState<Device[]>([]);
   const [loading, setLoading] = useState(false);
+  // 设备配置 Modal：当前打开的设备 ID，null 表示关闭
+  const [configDeviceId, setConfigDeviceId] = useState<string | null>(null);
 
   // 加载设备列表
   const loadDevices = async () => {
@@ -63,12 +66,20 @@ export default function Devices() {
       title: '操作',
       key: 'action',
       render: (_, record) => (
-        <Button
-          type="link"
-          onClick={() => navigate(`/devices/${record.device_id}`)}
-        >
-          查看详情
-        </Button>
+        <Space size={0}>
+          <Button
+            type="link"
+            onClick={() => navigate(`/devices/${record.device_id}`)}
+          >
+            查看详情
+          </Button>
+          <Button
+            type="link"
+            onClick={() => setConfigDeviceId(record.device_id)}
+          >
+            配置
+          </Button>
+        </Space>
       ),
     },
   ];
@@ -94,6 +105,13 @@ export default function Devices() {
           pagination={{ pageSize: 10 }}
         />
       </Spin>
+
+      {/* 设备配置 Modal */}
+      <DeviceConfigModal
+        deviceId={configDeviceId ?? ''}
+        open={configDeviceId !== null}
+        onClose={() => setConfigDeviceId(null)}
+      />
     </Card>
   );
 }

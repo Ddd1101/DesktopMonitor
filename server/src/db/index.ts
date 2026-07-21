@@ -64,6 +64,7 @@ function runMigrations(db: Database.Database): void {
       hostname TEXT,
       ip_address TEXT,
       os_info TEXT,
+      monitor_resolutions TEXT, -- JSON 字符串，存 [{width,height}, ...]
       last_heartbeat_at TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       FOREIGN KEY (agent_id) REFERENCES agents(id)
@@ -93,11 +94,28 @@ function runMigrations(db: Database.Database): void {
       UNIQUE(device_id, taken_at, monitor_index) -- 用于去重（含屏幕索引，支持多屏）
     );
 
+    -- 设备配置表（每台设备一行，远程控制 Agent 行为）
+    CREATE TABLE IF NOT EXISTS device_configs (
+      device_id TEXT PRIMARY KEY,
+      screenshot_quality INTEGER NOT NULL DEFAULT 70,
+      screenshot_max_width INTEGER NOT NULL DEFAULT 1920,
+      screenshot_interval_sec INTEGER NOT NULL DEFAULT 30,
+      retention_value INTEGER NOT NULL DEFAULT 30,
+      retention_unit TEXT NOT NULL DEFAULT 'days',
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
     -- 索引
     CREATE INDEX IF NOT EXISTS idx_events_device_started ON events(device_id, started_at);
     CREATE INDEX IF NOT EXISTS idx_screenshots_device_taken ON screenshots(device_id, taken_at);
     CREATE INDEX IF NOT EXISTS idx_devices_last_heartbeat ON devices(last_heartbeat_at);
   `);
+
+  // 兼容旧表迁移：若 devices 缺 monitor_resolutions 列则补上
+  const deviceCols = db.prepare("PRAGMA table_info(devices)").all() as { name: string }[];
+  if (!deviceCols.some((c) => c.name === 'monitor_resolutions')) {
+    db.exec('ALTER TABLE devices ADD COLUMN monitor_resolutions TEXT');
+  }
 
   // 兼容旧表迁移：若 screenshots 缺 monitor_index 列则补上
   const cols = db.prepare("PRAGMA table_info(screenshots)").all() as { name: string }[];

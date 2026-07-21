@@ -58,6 +58,47 @@ class Config:
     # Agent 注册成功后保存的凭证文件
     CREDENTIALS_FILE = os.path.join(DATA_DIR, 'credentials.json')
 
+    def apply_remote_config(self, remote: dict) -> bool:
+        """根据远端配置更新本机配置项。
+
+        比较 screenshot_quality、screenshot_max_width、screenshot_interval_sec
+        与当前值，有变化则更新对应类属性并返回 True；无变化返回 False。
+
+        screenshot_quality 变化时，同步更新 SCREENSHOT_QUALITY_STEPS 为：
+        [q, int(q*0.7), int(q*0.4), max(5, int(q*0.2))]
+
+        Args:
+            remote: 远端配置 dict，应包含 screenshot_quality、
+                screenshot_max_width、screenshot_interval_sec 等字段
+
+        Returns:
+            True 表示有配置项发生变化；False 表示无变化
+        """
+        changed = False
+
+        # 截图清晰度
+        quality = remote.get('screenshot_quality')
+        if quality is not None and int(quality) != self.SCREENSHOT_QUALITY_STEPS[0]:
+            q = int(quality)
+            self.SCREENSHOT_QUALITY_STEPS = [
+                q, int(q * 0.7), int(q * 0.4), max(5, int(q * 0.2))
+            ]
+            changed = True
+
+        # 截图最大宽度
+        max_width = remote.get('screenshot_max_width')
+        if max_width is not None and int(max_width) != self.SCREENSHOT_MAX_WIDTH:
+            self.SCREENSHOT_MAX_WIDTH = int(max_width)
+            changed = True
+
+        # 截图采集间隔
+        interval = remote.get('screenshot_interval_sec')
+        if interval is not None and int(interval) != self.SCREENSHOT_INTERVAL:
+            self.SCREENSHOT_INTERVAL = int(interval)
+            changed = True
+
+        return changed
+
 
 # 全局配置单例
 config = Config()

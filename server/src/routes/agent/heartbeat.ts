@@ -8,6 +8,10 @@ const heartbeatSchema = z.object({
   hostname: z.string().optional(),
   ip_address: z.string().optional(),
   os_info: z.string().optional(),
+  // 显示器分辨率列表，可选上报（多屏时为多元素数组）
+  monitor_resolutions: z
+    .array(z.object({ width: z.number(), height: z.number() }))
+    .optional(),
 });
 
 /**
@@ -32,7 +36,7 @@ export default async function agentHeartbeatRoutes(app: FastifyInstance): Promis
         return;
       }
 
-      const { hostname, ip_address, os_info } = parsed.data;
+      const { hostname, ip_address, os_info, monitor_resolutions } = parsed.data;
 
       // 动态拼装 UPDATE 语句，仅更新提供的字段
       const updates: string[] = ["last_heartbeat_at = datetime('now')"];
@@ -49,6 +53,11 @@ export default async function agentHeartbeatRoutes(app: FastifyInstance): Promis
       if (os_info !== undefined) {
         updates.push('os_info = ?');
         params.push(os_info);
+      }
+      // 显示器分辨率列表以 JSON 字符串存入 devices.monitor_resolutions
+      if (monitor_resolutions !== undefined) {
+        updates.push('monitor_resolutions = ?');
+        params.push(JSON.stringify(monitor_resolutions));
       }
 
       params.push(deviceId);

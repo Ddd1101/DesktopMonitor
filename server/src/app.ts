@@ -15,11 +15,14 @@ import adminDevicesRoutes from './routes/admin/devices.js';
 import adminScreenshotsRoutes from './routes/admin/screenshots.js';
 import adminEventsRoutes from './routes/admin/events.js';
 import adminDashboardRoutes from './routes/admin/dashboard.js';
+import adminConfigRoutes from './routes/admin/config.js';
 import agentRegisterRoutes from './routes/agent/register.js';
 import agentEventsRoutes from './routes/agent/events.js';
 import agentScreenshotsRoutes from './routes/agent/screenshots.js';
 import agentHeartbeatRoutes from './routes/agent/heartbeat.js';
+import agentConfigRoutes from './routes/agent/config.js';
 import monitorWsRoutes from './routes/ws/monitor.js';
+import { startCleanupService } from './services/cleanup.js';
 
 /**
  * 构建 Fastify 应用实例
@@ -69,12 +72,14 @@ export async function buildApp(): Promise<FastifyInstance> {
   app.register(adminScreenshotsRoutes);
   app.register(adminEventsRoutes);
   app.register(adminDashboardRoutes);
+  app.register(adminConfigRoutes);
 
   // 注册 Agent 路由
   app.register(agentRegisterRoutes);
   app.register(agentEventsRoutes);
   app.register(agentScreenshotsRoutes);
   app.register(agentHeartbeatRoutes);
+  app.register(agentConfigRoutes);
 
   // 注册 WebSocket 监控路由（路径已含 /ws 前缀，无需额外 prefix）
   app.register(monitorWsRoutes);
@@ -98,6 +103,9 @@ export async function buildApp(): Promise<FastifyInstance> {
       error: err.message || '服务器内部错误',
     });
   });
+
+  // 启动截图过期清理服务（每小时执行一次）
+  startCleanupService();
 
   return app;
 }

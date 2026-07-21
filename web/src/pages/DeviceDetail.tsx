@@ -28,6 +28,7 @@ import {
   type Screenshot,
 } from '../api/admin';
 import PlaybackPanel from '../components/PlaybackPanel';
+import DeviceConfigModal from '../components/DeviceConfigModal';
 
 const { Text, Title } = Typography;
 
@@ -81,6 +82,9 @@ export default function DeviceDetail() {
   const [eventTotal, setEventTotal] = useState(0);
   const [eventPage, setEventPage] = useState(1);
   const [eventLoading, setEventLoading] = useState(false);
+
+  // 设备配置 Modal
+  const [configOpen, setConfigOpen] = useState(false);
 
   // 加载设备信息：从设备列表中筛选当前设备
   const loadDevice = async () => {
@@ -288,13 +292,16 @@ export default function DeviceDetail() {
       <Card
         title={`设备详情：${deviceId}`}
         extra={
-          <Button
-            type={wsConnected ? 'default' : 'primary'}
-            danger={wsConnected}
-            onClick={toggleWs}
-          >
-            {wsConnected ? '停止实时查看' : '实时查看'}
-          </Button>
+          <Space>
+            <Button
+              type={wsConnected ? 'default' : 'primary'}
+              danger={wsConnected}
+              onClick={toggleWs}
+            >
+              {wsConnected ? '停止实时查看' : '实时查看'}
+            </Button>
+            <Button onClick={() => setConfigOpen(true)}>配置</Button>
+          </Space>
         }
       >
         <Space size="large" wrap>
@@ -501,6 +508,13 @@ export default function DeviceDetail() {
           </Card>
         </Col>
       </Row>
+
+      {/* 设备配置 Modal */}
+      <DeviceConfigModal
+        deviceId={deviceId}
+        open={configOpen}
+        onClose={() => setConfigOpen(false)}
+      />
     </Spin>
   );
 }
