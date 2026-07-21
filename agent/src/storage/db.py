@@ -253,6 +253,24 @@ class Database:
                 cur.execute('ROLLBACK')
                 raise
 
+    def delete_events_batch(self, ids: list[int]) -> None:
+        """批量删除待上报事件（单事务，避免每条独立 fsync）。"""
+        if not ids:
+            return
+        placeholders = ','.join('?' * len(ids))
+        with self._lock:
+            cur = self._conn.cursor()
+            try:
+                cur.execute('BEGIN')
+                cur.execute(
+                    f'DELETE FROM pending_events WHERE id IN ({placeholders})',
+                    ids,
+                )
+                cur.execute('COMMIT')
+            except Exception:
+                cur.execute('ROLLBACK')
+                raise
+
     def delete_screenshot(self, screenshot_id: int) -> None:
         """根据 id 删除一条待上报截图记录。"""
         with self._lock:
@@ -260,6 +278,49 @@ class Database:
             try:
                 cur.execute('BEGIN')
                 cur.execute('DELETE FROM pending_screenshots WHERE id = ?', (screenshot_id,))
+                cur.execute('COMMIT')
+            except Exception:
+                cur.execute('ROLLBACK')
+                raise
+
+    def delete_screenshots_batch(self, ids: list[int]) -> None:
+        """批量删除待上报截图记录（单事务，避免每条独立 fsync）。"""
+        if not ids:
+            return
+        placeholders = ','.join('?' * len(ids))
+        with self._lock:
+            cur = self._conn.cursor()
+            try:
+                cur.execute('BEGIN')
+                cur.execute(
+                    f'DELETE FROM pending_screenshots WHERE id IN ({placeholders})',
+                    ids,
+                )
+                cur.execute('COMMIT')
+            except Exception:
+                cur.execute('ROLLBACK')
+                raise
+
+    def increment_retry_batch(self, table: str, ids: list[int]) -> None:
+        """批量将指定表的多条记录 retry_count + 1（单事务）。
+
+        Args:
+            table: 表名，仅允许 'pending_events' 或 'pending_screenshots'
+            ids: 记录主键 id 列表
+        """
+        if not ids:
+            return
+        if table not in _VALID_TABLES:
+            raise ValueError(
+                f'非法表名: {table!r}，仅允许 {sorted(_VALID_TABLES)}'
+            )
+        placeholders = ','.join('?' * len(ids))
+        sql = f'UPDATE {table} SET retry_count = retry_count + 1 WHERE id IN ({placeholders})'
+        with self._lock:
+            cur = self._conn.cursor()
+            try:
+                cur.execute('BEGIN')
+                cur.execute(sql, ids)
                 cur.execute('COMMIT')
             except Exception:
                 cur.execute('ROLLBACK')

@@ -233,25 +233,29 @@ class UploadWorker:
             ok = False
 
         if ok:
-            # 成功：批量删除
-            for row in rows:
-                try:
-                    db.delete_event(row['id'])
-                except Exception as e:
-                    logger.error(f'删除事件记录失败 id={row["id"]}: {e}')
+            # 成功：批量删除（单事务，避免每条独立 fsync）
+            try:
+                db.delete_events_batch([row['id'] for row in rows])
+            except Exception as e:
+                logger.error(f'批量删除事件记录失败: {e}', exc_info=True)
             logger.debug(f'事件批量上传成功 count={len(rows)}')
         else:
-            # 失败：逐条递增重试次数，超过上限的跳过
+            # 失败：批量递增重试次数，超过上限的跳过
+            retry_ids = [
+                row['id']
+                for row in rows
+                if int(row.get('retry_count', 0) or 0) < self.MAX_RETRY
+            ]
             for row in rows:
                 if int(row.get('retry_count', 0) or 0) >= self.MAX_RETRY:
                     logger.warning(
                         f'事件 id={row["id"]} 重试已达上限，跳过'
                     )
-                    continue
+            if retry_ids:
                 try:
-                    db.increment_retry('pending_events', row['id'])
+                    db.increment_retry_batch('pending_events', retry_ids)
                 except Exception as e:
-                    logger.error(f'递增重试次数失败 id={row["id"]}: {e}')
+                    logger.error(f'批量递增重试次数失败: {e}', exc_info=True)
 
     # ----- 心跳 -----
     def _send_heartbeat(self) -> bool:
