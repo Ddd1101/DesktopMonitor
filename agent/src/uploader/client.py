@@ -1,0 +1,261 @@
+"""服务端 HTTP 客户端封装
+
+封装 Agent 与服务端之间的所有 HTTP 交互：
+- POST /api/agent/register   注册并获取 (deviceId, token)
+- POST /api/agent/events     上报活动事件
+- POST /api/agent/screenshots multipart 上传截图
+- POST /api/agent/heartbeat  发送心跳
+
+约定：
+- 所有受保护接口使用 Authorization: Bearer <token>
+- 注册接口在请求体中携带 registerToken
+- 所有请求超时 30 秒
+- 401 响应统一抛 TokenExpiredError
+"""
+import os
+from typing import Optional
+
+import requests
+
+from src.config.config import config
+from src.utils.logger import get_logger
+
+logger = get_logger(__name__)
+
+
+class TokenExpiredError(Exception):
+    """Token 失效或过期异常。
+
+    上传工作线程捕获此异常后会触发重新注册流程。
+    """
+    pass
+
+
+class ServerClient:
+    """服务端 HTTP 客户端。"""
+
+    # 所有请求统一超时（秒）
+    REQUEST_TIMEOUT = 30
+
+    def __init__(self, base_url: Optional[str] = None) -> None:
+        """初始化客户端。
+
+        Args:
+            base_url: 服务端基础地址，默认 config.SERVER_URL
+        """
+        self.base_url = (base_url or config.SERVER_URL).rstrip('/')
+        self._token: Optional[str] = None
+        self._device_id: Optional[str] = None
+        # 使用 Session 复用连接
+        self._session = requests.Session()
+        # 注册接口的预置 Token
+        self._register_token = config.AGENT_REGISTER_TOKEN
+
+    # ----- Token / DeviceId 管理 -----
+    def set_token(self, token: Optional[str]) -> None:
+        """设置 token，并同步更新 Session 的 Authorization 头。"""
+        self._token = token
+        if token:
+            self._session.headers.update({'Authorization': f'Bearer {token}'})
+        else:
+            self._session.headers.pop('Authorization', None)
+
+    def get_token(self) -> Optional[str]:
+        return self._token
+
+    def set_device_id(self, device_id: Optional[str]) -> None:
+        self._device_id = device_id
+
+    def get_device_id(self) -> Optional[str]:
+        return self._device_id
+
+    # ----- 注册 -----
+    def register(
+        self, hostname: str, os_info: Optional[str] = None
+    ) -> tuple[str, str]:
+        """调用 POST /api/agent/register 完成注册。
+
+        Args:
+            hostname: 主机名
+            os_info: 操作系统信息
+
+        Returns:
+            (deviceId, token)
+
+        Raises:
+            RuntimeError: 注册失败
+            requests.RequestException: 网络异常
+        """
+        url = f'{self.base_url}/api/agent/register'
+        # 服务端字段为 camelCase
+        payload = {
+            'registerToken': self._register_token,
+            'hostname': hostname,
+            'osInfo': os_info or '',
+        }
+        try:
+            resp = self._session.post(
+                url, json=payload, timeout=self.REQUEST_TIMEOUT
+            )
+        except requests.RequestException as e:
+            logger.error(f'注册请求失败: {e}')
+            raise
+
+        if resp.status_code not in (200, 201):
+            logger.error(
+                f'注册失败 status={resp.status_code} body={resp.text[:200]}'
+            )
+            raise RuntimeError(f'注册失败: HTTP {resp.status_code}')
+
+        try:
+            data = resp.json()
+        except ValueError:
+            raise RuntimeError('注册响应非 JSON')
+
+        device_id = data.get('deviceId') or data.get('device_id')
+        token = data.get('token')
+        if not device_id or not token:
+            raise RuntimeError(f'注册响应缺少 deviceId/token: {data}')
+
+        # 注册成功，保存到内存（凭证持久化由调用方负责）
+        self.set_token(token)
+        self.set_device_id(device_id)
+        logger.info(f'注册成功 deviceId={device_id}')
+        return (device_id, token)
+
+    # ----- 事件上报 -----
+    def send_events(self, events: list[dict]) -> bool:
+        """调用 POST /api/agent/events 上报事件。
+
+        Args:
+            events: 事件列表
+
+        Returns:
+            True 表示成功；False 表示业务失败（非 401）
+
+        Raises:
+            TokenExpiredError: 401 时抛出
+        """
+        if not self._token:
+            raise TokenExpiredError('未设置 token')
+
+        url = f'{self.base_url}/api/agent/events'
+        try:
+            resp = self._session.post(
+                url, json={'events': events}, timeout=self.REQUEST_TIMEOUT
+            )
+        except requests.RequestException as e:
+            logger.error(f'上报事件网络异常: {e}')
+            return False
+
+        if resp.status_code == 401:
+            raise TokenExpiredError('事件上报返回 401')
+        if resp.status_code not in (200, 201):
+            logger.error(
+                f'上报事件失败 status={resp.status_code} body={resp.text[:200]}'
+            )
+            return False
+        return True
+
+    # ----- 截图上传 -----
+    def send_screenshot(
+        self,
+        file_path: str,
+        taken_at: str,
+        monitor_index: int = 1,
+    ) -> bool:
+        """multipart 上传单张截图到 POST /api/agent/screenshots。
+
+        Args:
+            file_path: 截图文件绝对路径
+            taken_at: 截图时间（ISO 8601）
+            monitor_index: 显示器索引（从 1 开始，1=主屏）
+
+        Returns:
+            True 表示成功；False 表示业务失败（非 401）
+
+        Raises:
+            TokenExpiredError: 401 时抛出
+        """
+        if not self._token:
+            raise TokenExpiredError('未设置 token')
+
+        if not os.path.exists(file_path):
+            logger.warning(f'截图文件不存在: {file_path}')
+            return False
+
+        url = f'{self.base_url}/api/agent/screenshots'
+        try:
+            # 使用上下文管理器确保文件句柄关闭
+            with open(file_path, 'rb') as f:
+                files = {
+                    'file': (os.path.basename(file_path), f, 'image/jpeg'),
+                }
+                data = {
+                    'taken_at': taken_at,
+                    'takenAt': taken_at,
+                    'monitor_index': str(monitor_index),
+                    'monitorIndex': str(monitor_index),
+                    'device_id': self._device_id or '',
+                    'deviceId': self._device_id or '',
+                }
+                resp = self._session.post(
+                    url, files=files, data=data, timeout=self.REQUEST_TIMEOUT
+                )
+        except requests.RequestException as e:
+            logger.error(f'上传截图网络异常: {e}')
+            return False
+        except OSError as e:
+            logger.error(f'读取截图文件失败: {e}')
+            return False
+
+        if resp.status_code == 401:
+            raise TokenExpiredError('截图上传返回 401')
+        if resp.status_code not in (200, 201):
+            logger.error(
+                f'上传截图失败 status={resp.status_code} body={resp.text[:200]}'
+            )
+            return False
+        return True
+
+    # ----- 心跳 -----
+    def heartbeat(
+        self,
+        hostname: Optional[str] = None,
+        ip: Optional[str] = None,
+        os_info: Optional[str] = None,
+    ) -> bool:
+        """调用 POST /api/agent/heartbeat 发送心跳。
+
+        Returns:
+            True 表示成功；False 表示业务失败（非 401）
+
+        Raises:
+            TokenExpiredError: 401 时抛出
+        """
+        if not self._token:
+            raise TokenExpiredError('未设置 token')
+
+        url = f'{self.base_url}/api/agent/heartbeat'
+        payload = {
+            'hostname': hostname or '',
+            'ip': ip or '',
+            'os_info': os_info or '',
+            'osInfo': os_info or '',
+        }
+        try:
+            resp = self._session.post(
+                url, json=payload, timeout=self.REQUEST_TIMEOUT
+            )
+        except requests.RequestException as e:
+            logger.error(f'心跳网络异常: {e}')
+            return False
+
+        if resp.status_code == 401:
+            raise TokenExpiredError('心跳返回 401')
+        if resp.status_code not in (200, 201):
+            logger.error(
+                f'心跳失败 status={resp.status_code} body={resp.text[:200]}'
+            )
+            return False
+        return True
