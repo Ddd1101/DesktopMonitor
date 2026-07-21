@@ -51,9 +51,17 @@ class Database:
             self.db_path,
             check_same_thread=False,
             isolation_level=None,  # 自动提交模式，事务由显式 BEGIN/COMMIT 控制
+            timeout=5.0,  # 等待锁最多 5 秒
         )
         # 行结果以 dict 形式返回
         self._conn.row_factory = sqlite3.Row
+
+        # 性能 PRAGMA：WAL 模式允许读写并发，synchronous=NORMAL 在 WAL 下安全
+        # （仅在断电时可能丢最后一条事务，对监控类数据可接受）
+        self._conn.execute('PRAGMA journal_mode=WAL')
+        self._conn.execute('PRAGMA synchronous=NORMAL')
+        self._conn.execute('PRAGMA temp_store=MEMORY')
+        self._conn.execute('PRAGMA cache_size=-8192')  # 8MB 缓存
 
         # 初始化表结构
         self.init_db()
