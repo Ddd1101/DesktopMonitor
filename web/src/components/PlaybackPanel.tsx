@@ -1,5 +1,5 @@
 // 历史回放组件：按时间范围加载截图，支持播放/暂停/倍速/进度条/逐帧
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Button,
   DatePicker,
@@ -36,6 +36,10 @@ const SPEED_OPTIONS = [
   { label: '2x', value: 2 },
   { label: '4x', value: 4 },
 ];
+
+// 可见帧缓冲：当前帧前后各预读 2 帧，避免切换时重新加载/解码图片导致闪烁
+// 同时避免一次性渲染所有帧（数百上千张）导致内存爆炸
+const VISIBLE_BUFFER = 2;
 
 export default function PlaybackPanel({ deviceId }: { deviceId: string }) {
   const [timeRange, setTimeRange] = useState<[Dayjs, Dayjs]>([
@@ -150,6 +154,16 @@ export default function PlaybackPanel({ deviceId }: { deviceId: string }) {
     setCurrentIdx((i) => Math.min(frames.length - 1, i + 1));
   };
 
+  // 只渲染当前帧 ± VISIBLE_BUFFER 范围内的帧，避免一次性挂载数千张图片导致内存爆炸
+  // 预读范围内的图片在切换前已被浏览器加载解码，避免切换闪烁
+  const visibleFrames = useMemo(() => {
+    const start = Math.max(0, currentIdx - VISIBLE_BUFFER);
+    const end = Math.min(frames.length, currentIdx + VISIBLE_BUFFER + 1);
+    return frames
+      .slice(start, end)
+      .map((frame, i) => ({ frame, absIdx: start + i }));
+  }, [frames, currentIdx]);
+
   return (
     <div>
       {/* 时间范围选择 + 加载按钮 */}
@@ -179,12 +193,12 @@ export default function PlaybackPanel({ deviceId }: { deviceId: string }) {
           <Empty description="选择时间范围并点击「加载回放」" />
         ) : (
           <>
-            {/* 回放画面：渲染所有帧，仅显示当前帧，避免切换时重新加载/解码图片导致闪烁 */}
+            {/* 回放画面：只渲染当前帧 ± 2 帧缓冲，避免切换时重新加载/解码图片导致闪烁 */}
             <div style={{ marginBottom: 12 }}>
-              {frames.map((frame, idx) => (
+              {visibleFrames.map(({ frame, absIdx }) => (
                 <div
-                  key={idx}
-                  style={{ display: idx === currentIdx ? 'block' : 'none' }}
+                  key={absIdx}
+                  style={{ display: absIdx === currentIdx ? 'block' : 'none' }}
                 >
                   <Space size={12} wrap>
                     {frame.items.map((s) => (
@@ -192,6 +206,8 @@ export default function PlaybackPanel({ deviceId }: { deviceId: string }) {
                         <img
                           src={s.url}
                           alt={`回放-显示器${s.monitor_index ?? 1}`}
+                          loading={absIdx === currentIdx ? 'eager' : 'lazy'}
+                          decoding="async"
                           style={{
                             maxWidth: '100%',
                             maxHeight: 320,
