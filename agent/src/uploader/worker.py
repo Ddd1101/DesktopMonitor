@@ -7,6 +7,7 @@ UploadWorker 负责：
 4. 遇到 TokenExpiredError 自动重新注册并刷新凭证
 5. 每 60 秒发送一次心跳（与上传循环共享线程，避免多开线程）
 """
+import os
 import platform
 import socket
 import threading
@@ -176,6 +177,14 @@ class UploadWorker:
             if ok:
                 try:
                     db.delete_screenshot(row_id)
+                    # 删除本地截图文件，避免磁盘无限累积
+                    try:
+                        if file_path and os.path.exists(file_path):
+                            os.remove(file_path)
+                    except Exception as e:
+                        logger.warning(
+                            f'删除本地截图文件失败 id={row_id} path={file_path}: {e}'
+                        )
                     logger.debug(f'截图上传成功 id={row_id}')
                 except Exception as e:
                     logger.error(f'删除截图记录失败 id={row_id}: {e}')
