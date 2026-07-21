@@ -9,7 +9,7 @@ import threading
 import time
 from datetime import datetime
 from io import BytesIO
-from typing import List, Optional
+from typing import Any, List, Optional
 
 import mss
 from PIL import Image
@@ -131,6 +131,14 @@ class ScreenCollector:
         # 唤醒信号：用于 update_interval 时打断 wait，使新间隔立即生效
         self._wake_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
+        # 复用 mss 实例，避免每次采集都创建/销毁 GDI 资源
+        self._sct: Optional[Any] = None
+
+    def _get_sct(self) -> Any:
+        """惰性创建并复用 mss 实例。"""
+        if self._sct is None:
+            self._sct = mss.mss()
+        return self._sct
 
     def capture_once(self) -> List[str]:
         """抓取一次所有显示器并保存为 JPEG，写入数据库队列。
@@ -150,39 +158,40 @@ class ScreenCollector:
         try:
             os.makedirs(target_dir, exist_ok=True)
 
-            with mss.mss() as sct:
-                # monitors[0] 是所有屏幕合并的虚拟区域，跳过；monitors[1:] 是各物理屏幕
-                monitors = sct.monitors[1:]
-                if not monitors:
-                    # 极少见情况：拿不到任何屏幕
-                    logger.warning('未检测到任何显示器')
-                    return []
+            # 复用 mss 实例，避免每次采集都创建/销毁 GDI 句柄
+            sct = self._get_sct()
+            # monitors[0] 是所有屏幕合并的虚拟区域，跳过；monitors[1:] 是各物理屏幕
+            monitors = sct.monitors[1:]
+            if not monitors:
+                # 极少见情况：拿不到任何屏幕
+                logger.warning('未检测到任何显示器')
+                return []
 
-                for idx, monitor in enumerate(monitors, start=1):
-                    # 文件名带显示器索引 _m{idx}，便于区分
-                    file_path = os.path.join(
-                        target_dir, f'{timestamp}_m{idx}.jpg'
+            for idx, monitor in enumerate(monitors, start=1):
+                # 文件名带显示器索引 _m{idx}，便于区分
+                file_path = os.path.join(
+                    target_dir, f'{timestamp}_m{idx}.jpg'
+                )
+                try:
+                    raw = sct.grab(monitor)
+                    # mss 返回 BGRA 像素缓冲，转 RGB
+                    img = Image.frombytes(
+                        'RGB', raw.size, raw.bgra, 'raw', 'BGRX'
                     )
-                    try:
-                        raw = sct.grab(monitor)
-                        # mss 返回 BGRA 像素缓冲，转 RGB
-                        img = Image.frombytes(
-                            'RGB', raw.size, raw.bgra, 'raw', 'BGRX'
-                        )
-                        # 按阈值压缩保存
-                        quality = _save_with_size_limit(img, file_path)
-                        file_size_kb = os.path.getsize(file_path) / 1024
-                        logger.debug(
-                            f'显示器{idx} 截图已保存 q={quality} '
-                            f'{file_size_kb:.0f}KB'
-                        )
-                        saved_paths.append(file_path)
-                    except Exception as e:
-                        # 单个屏幕失败不影响其他屏幕
-                        logger.error(
-                            f'显示器 {idx} 截图失败: {e}', exc_info=True
-                        )
-                        continue
+                    # 按阈值压缩保存
+                    quality = _save_with_size_limit(img, file_path)
+                    file_size_kb = os.path.getsize(file_path) / 1024
+                    logger.debug(
+                        f'显示器{idx} 截图已保存 q={quality} '
+                        f'{file_size_kb:.0f}KB'
+                    )
+                    saved_paths.append(file_path)
+                except Exception as e:
+                    # 单个屏幕失败不影响其他屏幕
+                    logger.error(
+                        f'显示器 {idx} 截图失败: {e}', exc_info=True
+                    )
+                    continue
 
             # 统一写入数据库待上传队列
             for idx, file_path in enumerate(saved_paths, start=1):
@@ -239,11 +248,18 @@ class ScreenCollector:
         self._thread.start()
 
     def stop(self) -> None:
-        """停止采集线程。"""
+        """停止采集线程并释放 mss 资源。"""
         self._stop_event.set()
         if self._thread:
             self._thread.join(timeout=5)
             self._thread = None
+        # 释放 mss 实例（关闭 GDI 句柄）
+        if self._sct is not None:
+            try:
+                self._sct.close()
+            except Exception:
+                pass
+            self._sct = None
 
     def update_interval(self, new_interval: int) -> None:
         """动态更新采集间隔，立即生效。
