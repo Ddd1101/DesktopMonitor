@@ -1,5 +1,5 @@
 // 设备列表页：表格展示所有设备，支持刷新与跳转详情
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Button, Card, Space, Spin, Table, Tag } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { ReloadOutlined } from '@ant-design/icons';
@@ -55,53 +55,57 @@ export default function Devices() {
     };
   }, []);
 
-  // 表格列定义
-  const columns: ColumnsType<Device> = [
-    {
-      title: '设备ID',
-      dataIndex: 'device_id',
-      key: 'device_id',
-    },
-    {
-      title: '主机名',
-      dataIndex: 'hostname',
-      key: 'hostname',
-    },
-    {
-      title: '最后心跳时间',
-      dataIndex: 'last_heartbeat_at',
-      key: 'last_heartbeat_at',
-      render: (value: string | null) =>
-        value ? dayjs(value).format('YYYY-MM-DD HH:mm:ss') : '-',
-    },
-    {
-      title: '状态',
-      dataIndex: 'is_online',
-      key: 'is_online',
-      render: (online: boolean) =>
-        online ? <Tag color="green">在线</Tag> : <Tag>离线</Tag>,
-    },
-    {
-      title: '操作',
-      key: 'action',
-      render: (_, record) => (
-        <Space size={0}>
-          <Button
-            type="link"
-            onClick={() => navigate(`/devices/${record.device_id}`)}
-          >
-            查看详情
-          </Button>
-          <Button
-            type="link"
-            onClick={() => setConfigDeviceId(record.device_id)}
-          >
-            配置
-          </Button>
-        </Space>
-      ),
-    },
-  ];
+  // 表格列定义（useMemo 避免每次渲染重建数组导致 Table 无谓重渲染）
+  const columns = useMemo<ColumnsType<Device>>(
+    () => [
+      {
+        title: '设备ID',
+        dataIndex: 'device_id',
+        key: 'device_id',
+      },
+      {
+        title: '主机名',
+        dataIndex: 'hostname',
+        key: 'hostname',
+      },
+      {
+        title: '最后心跳时间',
+        dataIndex: 'last_heartbeat_at',
+        key: 'last_heartbeat_at',
+        render: (value: string | null) =>
+          value ? dayjs(value).format('YYYY-MM-DD HH:mm:ss') : '-',
+      },
+      {
+        title: '状态',
+        dataIndex: 'is_online',
+        key: 'is_online',
+        render: (online: boolean) =>
+          online ? <Tag color="green">在线</Tag> : <Tag>离线</Tag>,
+      },
+      {
+        title: '操作',
+        key: 'action',
+        render: (_, record) => (
+          <Space size={0}>
+            <Button
+              type="link"
+              onClick={() => navigate(`/devices/${record.device_id}`)}
+            >
+              查看详情
+            </Button>
+            <Button
+              type="link"
+              onClick={() => setConfigDeviceId(record.device_id)}
+            >
+              配置
+            </Button>
+          </Space>
+        ),
+      },
+    ],
+    // navigate 和 setConfigDeviceId 均为稳定引用，数组实际只构建一次
+    [navigate, setConfigDeviceId],
+  );
 
   return (
     <Card

@@ -35,6 +35,42 @@ const { Text, Title } = Typography;
 // 分页大小
 const PAGE_SIZE = 10;
 
+// 事件表格列定义（无响应式依赖，模块级常量避免每次渲染重建）
+const eventColumns: ColumnsType<ActivityEvent> = [
+  {
+    title: '应用名',
+    dataIndex: 'app_name',
+    key: 'app_name',
+    width: 120,
+  },
+  {
+    title: '窗口标题',
+    dataIndex: 'window_title',
+    key: 'window_title',
+    ellipsis: true,
+  },
+  {
+    title: '开始时间',
+    dataIndex: 'started_at',
+    key: 'started_at',
+    width: 170,
+    render: (v: string) => dayjs(v).format('YYYY-MM-DD HH:mm:ss'),
+  },
+  {
+    title: '结束时间',
+    dataIndex: 'ended_at',
+    key: 'ended_at',
+    width: 170,
+    render: (v: string) => dayjs(v).format('YYYY-MM-DD HH:mm:ss'),
+  },
+  {
+    title: '时长(秒)',
+    dataIndex: 'duration_seconds',
+    key: 'duration_seconds',
+    width: 90,
+  },
+];
+
 // WebSocket 推送的消息结构
 interface WsMessage {
   type: string;
@@ -278,42 +314,6 @@ export default function DeviceDetail() {
     }
     connectWs();
   };
-
-  // 事件表格列定义
-  const eventColumns: ColumnsType<ActivityEvent> = [
-    {
-      title: '应用名',
-      dataIndex: 'app_name',
-      key: 'app_name',
-      width: 120,
-    },
-    {
-      title: '窗口标题',
-      dataIndex: 'window_title',
-      key: 'window_title',
-      ellipsis: true,
-    },
-    {
-      title: '开始时间',
-      dataIndex: 'started_at',
-      key: 'started_at',
-      width: 170,
-      render: (v: string) => dayjs(v).format('YYYY-MM-DD HH:mm:ss'),
-    },
-    {
-      title: '结束时间',
-      dataIndex: 'ended_at',
-      key: 'ended_at',
-      width: 170,
-      render: (v: string) => dayjs(v).format('YYYY-MM-DD HH:mm:ss'),
-    },
-    {
-      title: '时长(秒)',
-      dataIndex: 'duration_seconds',
-      key: 'duration_seconds',
-      width: 90,
-    },
-  ];
 
   return (
     <Spin spinning={deviceLoading}>
