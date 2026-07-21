@@ -81,6 +81,16 @@ export async function getDevices(): Promise<Device[]> {
 }
 
 /**
+ * 获取单个设备详情（避免拉取全量列表后 .find() 筛选）
+ */
+export async function getDevice(deviceId: string): Promise<Device> {
+  const { data } = await apiClient.get<Device>(
+    `/admin/devices/${deviceId}`,
+  );
+  return data;
+}
+
+/**
  * 获取设备截图分页列表
  */
 export async function getDeviceScreenshots(

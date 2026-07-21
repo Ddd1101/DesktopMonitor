@@ -20,9 +20,9 @@ import type { ColumnsType } from 'antd/es/table';
 import { useParams } from 'react-router-dom';
 import dayjs from 'dayjs';
 import {
+  getDevice,
   getDeviceEvents,
   getDeviceScreenshots,
-  getDevices,
   type ActivityEvent,
   type Device,
   type Screenshot,
@@ -86,12 +86,12 @@ export default function DeviceDetail() {
   // 设备配置 Modal
   const [configOpen, setConfigOpen] = useState(false);
 
-  // 加载设备信息：从设备列表中筛选当前设备
+  // 加载设备信息：直接查询单设备详情，避免拉取全量列表
   const loadDevice = async () => {
     setDeviceLoading(true);
     try {
-      const list = await getDevices();
-      setDevice(list.find((d) => d.device_id === deviceId) || null);
+      const d = await getDevice(deviceId);
+      setDevice(d);
     } catch (err) {
       console.error('加载设备信息失败', err);
     } finally {

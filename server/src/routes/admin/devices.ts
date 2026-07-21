@@ -28,6 +28,7 @@ function parseSqliteUtc(s: string | null): number {
 /**
  * 管理员设备列表路由
  * - GET /api/admin/devices：返回所有设备列表，附带在线状态
+ * - GET /api/admin/devices/:deviceId：返回单个设备详情，附带在线状态
  */
 export default async function adminDevicesRoutes(app: FastifyInstance): Promise<void> {
   app.get(
@@ -68,6 +69,45 @@ export default async function adminDevicesRoutes(app: FastifyInstance): Promise<
       });
 
       reply.send({ items });
+    },
+  );
+
+  // 单设备详情：避免前端拉取全量列表后 .find() 筛选
+  app.get(
+    '/api/admin/devices/:deviceId',
+    {
+      preHandler: [verifyAdminAuth],
+    },
+    async (request, reply) => {
+      const { deviceId } = request.params as { deviceId: string };
+      const stmt = db.prepare(`
+        SELECT d.device_id, d.hostname, d.ip_address, d.os_info,
+               d.last_heartbeat_at, d.created_at,
+               a.hostname AS agent_hostname
+        FROM devices d
+        LEFT JOIN agents a ON d.agent_id = a.id
+        WHERE d.device_id = ?
+      `);
+      const row = stmt.get(deviceId) as DeviceRow | undefined;
+      if (!row) {
+        reply.code(404).send({ error: '设备不存在' });
+        return;
+      }
+
+      const now = Date.now();
+      const timeoutMs = config.heartbeatTimeoutSeconds * 1000;
+      const lastTs = parseSqliteUtc(row.last_heartbeat_at);
+      const is_online = lastTs > 0 && now - lastTs < timeoutMs;
+
+      reply.send({
+        device_id: row.device_id,
+        hostname: row.hostname ?? row.agent_hostname,
+        ip_address: row.ip_address,
+        os_info: row.os_info,
+        last_heartbeat_at: row.last_heartbeat_at,
+        created_at: row.created_at,
+        is_online,
+      });
     },
   );
 }
