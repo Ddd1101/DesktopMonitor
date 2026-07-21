@@ -135,14 +135,35 @@ export default function DeviceDetail() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [deviceId]);
 
-  // 自动刷新：每 30 秒轮询设备信息、历史截图、活动事件（依赖当前页码，翻页时重建定时器）
+  // 自动刷新：每 30 秒轮询设备信息、历史截图、活动事件
+  // 标签页隐藏时暂停以节省请求；依赖当前页码，翻页时重建定时器
   useEffect(() => {
-    const timer = setInterval(() => {
+    let timer: ReturnType<typeof setInterval> | null = null;
+    const tick = () => {
       loadDevice();
       loadScreenshots(screenshotPage);
       loadEvents(eventPage);
-    }, 30_000);
-    return () => clearInterval(timer);
+    };
+    const start = () => {
+      if (timer) return;
+      timer = setInterval(tick, 30_000);
+    };
+    const stop = () => {
+      if (timer) {
+        clearInterval(timer);
+        timer = null;
+      }
+    };
+    const onVisibility = () => {
+      if (document.hidden) stop();
+      else start();
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+    start();
+    return () => {
+      stop();
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [deviceId, screenshotPage, eventPage]);
 

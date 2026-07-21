@@ -29,11 +29,30 @@ export default function Devices() {
     }
   };
 
-  // 进入页面时加载 + 自动刷新（每 30 秒）
+  // 进入页面时加载 + 自动刷新（每 30 秒，标签页隐藏时暂停以节省请求）
   useEffect(() => {
     loadDevices();
-    const timer = setInterval(loadDevices, 30_000);
-    return () => clearInterval(timer);
+    let timer: ReturnType<typeof setInterval> | null = null;
+    const start = () => {
+      if (timer) return;
+      timer = setInterval(loadDevices, 30_000);
+    };
+    const stop = () => {
+      if (timer) {
+        clearInterval(timer);
+        timer = null;
+      }
+    };
+    const onVisibility = () => {
+      if (document.hidden) stop();
+      else start();
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+    start();
+    return () => {
+      stop();
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
   }, []);
 
   // 表格列定义
