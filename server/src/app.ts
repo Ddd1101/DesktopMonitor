@@ -16,6 +16,7 @@ import adminScreenshotsRoutes from './routes/admin/screenshots.js';
 import adminEventsRoutes from './routes/admin/events.js';
 import adminDashboardRoutes from './routes/admin/dashboard.js';
 import adminConfigRoutes from './routes/admin/config.js';
+import adminTopologyRoutes from './routes/admin/topology.js';
 import agentRegisterRoutes from './routes/agent/register.js';
 import agentEventsRoutes from './routes/agent/events.js';
 import agentScreenshotsRoutes from './routes/agent/screenshots.js';
@@ -76,6 +77,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   app.register(adminEventsRoutes);
   app.register(adminDashboardRoutes);
   app.register(adminConfigRoutes);
+  app.register(adminTopologyRoutes);
 
   // 注册 Agent 路由
   app.register(agentRegisterRoutes);

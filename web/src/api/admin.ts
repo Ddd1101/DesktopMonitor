@@ -234,3 +234,44 @@ export async function updateDeviceConfig(
   );
   return data.config;
 }
+
+// 拓扑图中的设备节点
+export interface TopologyDevice {
+  device_id: string;
+  hostname: string;
+  ip_address: string;
+  os_info: string;
+  is_online: boolean;
+  last_heartbeat_at: string;
+  monitor_resolutions: { width: number; height: number }[];
+}
+
+// 网段分组
+export interface TopologyGroup {
+  subnet: string;
+  label: string;
+  devices: TopologyDevice[];
+}
+
+// 服务器信息
+export interface TopologyServer {
+  ip: string;
+  hostname: string;
+  online_count: number;
+  total_count: number;
+}
+
+// 拓扑数据完整结构
+export interface TopologyData {
+  server: TopologyServer;
+  groups: TopologyGroup[];
+}
+
+/**
+ * 获取网络拓扑数据
+ * 返回按 IP 网段分组的设备列表与服务器自身信息
+ */
+export async function getTopology(): Promise<TopologyData> {
+  const { data } = await apiClient.get<TopologyData>('/admin/topology');
+  return data;
+}

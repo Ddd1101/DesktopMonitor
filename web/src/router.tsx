@@ -6,6 +6,7 @@ import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
 import Devices from './pages/Devices';
 import DeviceDetail from './pages/DeviceDetail';
+import Topology from './pages/Topology';
 
 // 路由表说明：
 // /login                       公开路由
@@ -42,6 +43,10 @@ export const router = createBrowserRouter([
       {
         path: 'devices/:deviceId',
         element: <DeviceDetail />,
+      },
+      {
+        path: 'topology',
+        element: <Topology />,
       },
     ],
   },
