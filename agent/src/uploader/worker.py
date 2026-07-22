@@ -511,15 +511,9 @@ class UploadWorker:
                             f'删除孤儿文件失败 path={fpath}: {e}'
                         )
 
-        # 7. 删除空目录（自底向上，os.rmdir 仅在目录为空时删除）
-        if os.path.isdir(screenshots_dir):
-            for root, dirs, _files in os.walk(screenshots_dir, topdown=False):
-                for dname in dirs:
-                    dpath = os.path.join(root, dname)
-                    try:
-                        os.rmdir(dpath)
-                    except OSError:
-                        pass  # 目录非空，跳过
+        # 7. 不删除空目录：空目录无副作用且会被后续采集复用；
+        #    过期目录由第 9 步按日期整体清理。删除空目录会与
+        #    ScreenCollector 的 os.makedirs + open 产生竞态条件
 
         # 8. 日志记录删除的文件数量
         logger.info(

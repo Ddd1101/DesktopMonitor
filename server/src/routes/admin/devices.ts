@@ -33,12 +33,14 @@ interface DeviceRow {
 }
 
 /**
- * 将 SQLite datetime('now') 产生的 UTC 时间字符串解析为毫秒时间戳
- * SQLite 返回格式 'YYYY-MM-DD HH:MM:SS'，需转 ISO 才能正确按 UTC 解析
+ * 将 last_heartbeat_at 字符串解析为毫秒时间戳
+ * 心跳写入使用 dayjs 本地时间 ISO 8601 格式（YYYY-MM-DDTHH:mm:ss），
+ * 因此按本地时间解析（不追加 Z），与 Date.now() 比较判定在线状态
  */
-function parseSqliteUtc(s: string | null): number {
+function parseHeartbeatTs(s: string | null): number {
   if (!s) return 0;
-  const iso = s.replace(' ', 'T') + 'Z';
+  // 兼容旧格式（空格分隔）：'YYYY-MM-DD HH:MM:SS' -> 'YYYY-MM-DDTHH:MM:SS'
+  const iso = s.replace(' ', 'T');
   const ts = new Date(iso).getTime();
   return Number.isNaN(ts) ? 0 : ts;
 }
@@ -63,7 +65,7 @@ export default async function adminDevicesRoutes(app: FastifyInstance): Promise<
 
       // 计算每台设备的在线状态
       const items = rows.map((row) => {
-        const lastTs = parseSqliteUtc(row.last_heartbeat_at);
+        const lastTs = parseHeartbeatTs(row.last_heartbeat_at);
         const is_online = lastTs > 0 && now - lastTs < timeoutMs;
 
         return {
@@ -98,7 +100,7 @@ export default async function adminDevicesRoutes(app: FastifyInstance): Promise<
 
       const now = Date.now();
       const timeoutMs = config.heartbeatTimeoutSeconds * 1000;
-      const lastTs = parseSqliteUtc(row.last_heartbeat_at);
+      const lastTs = parseHeartbeatTs(row.last_heartbeat_at);
       const is_online = lastTs > 0 && now - lastTs < timeoutMs;
 
       reply.send({

@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify';
+import dayjs from 'dayjs';
 import { z } from 'zod';
 import { db } from '../../db/index.js';
 import { verifyAgentAuth } from '../../utils/agentAuth.js';
@@ -39,8 +40,10 @@ export default async function agentHeartbeatRoutes(app: FastifyInstance): Promis
       const { hostname, ip_address, os_info, monitor_resolutions } = parsed.data;
 
       // 动态拼装 UPDATE 语句，仅更新提供的字段
-      const updates: string[] = ["last_heartbeat_at = datetime('now')"];
-      const params: (string | null)[] = [];
+      // 使用 dayjs 本地时间 + ISO 8601（带 T）格式写入，
+      // 与 dashboard 查询边界保持一致（避免 datetime('now') 返回 UTC 且空格分隔导致的字符串比较错误）
+      const updates: string[] = ['last_heartbeat_at = ?'];
+      const params: (string | null)[] = [dayjs().format('YYYY-MM-DDTHH:mm:ss')];
 
       if (hostname !== undefined) {
         updates.push('hostname = ?');
