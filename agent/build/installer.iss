@@ -16,7 +16,7 @@ OutputBaseFilename=DesktopMonitorAgent-Setup
 Compression=lzma2
 SolidCompression=yes
 ; 仅在 64 位系统上以 64 位模式安装
-ArchitecturesInstallIn64Bit=x64compatible
+ArchitecturesInstallIn64BitMode=x64compatible
 ArchitecturesAllowed=x64compatible
 ; Win10 2004 (10.0.19041) 及以上
 MinVersion=10.0.19041

@@ -27,9 +27,14 @@ build/
 *.local
 
 # PyInstaller
+# 允许 agent/build/ 下的打包脚本（spec/iss/bat）纳入版本控制
+!agent/build/
+# 但忽略 PyInstaller 临时编译目录与最终产物
+agent/build_tmp/
+agent/dist/
+# 其他 .spec 文件仍忽略（仅保留 agent/build/agent.spec）
 *.spec
-build/
-dist/
+!agent/build/agent.spec
 
 # ===== Runtime data =====
 # Agent 本地缓存（截图、SQLite、日志、凭证）
