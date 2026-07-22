@@ -47,8 +47,13 @@ def _get_main_py_path() -> str:
 def _build_autostart_command() -> str:
     r"""构建注册表中存储的自启命令字符串。
 
-    格式：``"C:\path\to\pythonw.exe" "C:\path\to\agent\src\main.py"``
+    打包模式（PyInstaller）：直接指向 exe 本身，格式 ``"C:\path\to\agent.exe"``
+    开发模式：``"C:\path\to\pythonw.exe" "C:\path\to\agent\src\main.py"``
     """
+    if getattr(sys, 'frozen', False):
+        # 打包模式：直接指向 exe 本身
+        return f'"{sys.executable}"'
+    # 开发模式：pythonw.exe src/main.py
     pythonw = _get_pythonw_path()
     main_py = _get_main_py_path()
     # 路径两端加引号，避免路径中包含空格时被解析为多个参数

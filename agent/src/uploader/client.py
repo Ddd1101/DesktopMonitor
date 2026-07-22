@@ -281,8 +281,12 @@ class ServerClient:
     def get_remote_config(self) -> Optional[dict]:
         """调用 GET /api/agent/config 拉取远端配置。
 
+        服务端响应格式：{ config: {...}, update: {...} | null }
+        其中 update 字段（非 null 时）形如：
+        { latest_version, download_url, sha256, force }
+
         Returns:
-            config dict（响应中的 config 字段）；失败时返回 None
+            完整响应 dict（包含 config 与 update 字段）；失败时返回 None
 
         Raises:
             TokenExpiredError: 401 时抛出
@@ -312,8 +316,75 @@ class ServerClient:
             logger.error('拉取远端配置响应非 JSON')
             return None
 
-        config_data = data.get('config')
-        if not isinstance(config_data, dict):
+        if not isinstance(data, dict) or not isinstance(data.get('config'), dict):
             logger.error(f'远端配置响应缺少 config 字段: {data}')
             return None
-        return config_data
+        return data
+
+    # ----- 命令拉取与上报 -----
+    def get_commands(self) -> list[dict]:
+        """拉取当前设备的待执行命令。
+
+        调用 GET /api/agent/commands，返回命令列表。
+        每条命令形如：{ id, command, payload }，payload 为 JSON 字符串。
+
+        Returns:
+            命令列表；失败时返回空列表
+
+        Raises:
+            TokenExpiredError: 401 时抛出
+        """
+        if not self._token:
+            raise TokenExpiredError('未设置 token')
+
+        url = f'{self.base_url}/api/agent/commands'
+        try:
+            resp = self._session.get(url, timeout=self.REQUEST_TIMEOUT)
+        except requests.RequestException as e:
+            logger.error(f'拉取命令网络异常: {e}')
+            return []
+
+        if resp.status_code == 401:
+            raise TokenExpiredError('拉取命令返回 401')
+        if resp.status_code != 200:
+            logger.error(
+                f'拉取命令失败 status={resp.status_code} '
+                f'body={resp.text[:200]}'
+            )
+            return []
+
+        try:
+            data = resp.json()
+        except ValueError:
+            logger.error('拉取命令响应非 JSON')
+            return []
+
+        commands = data.get('commands', [])
+        if not isinstance(commands, list):
+            logger.error(f'拉取命令响应 commands 字段非列表: {data}')
+            return []
+        return commands
+
+    def report_command_done(self, command_id: int) -> None:
+        """上报命令执行完成。
+
+        调用 POST /api/agent/commands/:id/done。
+
+        Raises:
+            TokenExpiredError: 401 时抛出
+            requests.RequestException: 网络异常
+        """
+        if not self._token:
+            raise TokenExpiredError('未设置 token')
+
+        url = f'{self.base_url}/api/agent/commands/{command_id}/done'
+        resp = self._session.post(url, timeout=self.REQUEST_TIMEOUT)
+
+        if resp.status_code == 401:
+            raise TokenExpiredError('上报命令完成返回 401')
+        if resp.status_code not in (200, 201, 204):
+            logger.error(
+                f'上报命令完成失败 id={command_id} '
+                f'status={resp.status_code} body={resp.text[:200]}'
+            )
+            resp.raise_for_status()

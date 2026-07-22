@@ -1,12 +1,61 @@
 """配置模块
 
 使用 python-dotenv 加载 .env 环境变量，集中管理 Agent 运行配置。
+
+打包模式（PyInstaller）下：
+- 数据目录使用 %PROGRAMDATA%\\DesktopMonitorAgent\\data\\
+- 配置文件优先从 exe 同级 config.env 加载，回退到数据目录
+开发模式下：
+- 数据目录保持原有 agent/data/
+- 配置文件使用 agent/.env
 """
 import os
+import sys
+
 from dotenv import load_dotenv
 
-# 加载 agent/.env 文件（位于 src/config/ 上两级目录）
-load_dotenv()
+
+def _is_frozen() -> bool:
+    """判断是否为 PyInstaller 打包模式。"""
+    return getattr(sys, 'frozen', False)
+
+
+if _is_frozen():
+    # 打包模式：数据目录使用 %PROGRAMDATA%\DesktopMonitorAgent\data\
+    _BASE_DIR = os.path.join(os.environ.get('PROGRAMDATA', r'C:\ProgramData'), 'DesktopMonitorAgent')
+    _DATA_DIR = os.path.join(_BASE_DIR, 'data')
+else:
+    # 开发模式：保持原有 agent/data/（src/config/config.py 上溯三级到 agent/）
+    _BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    _DATA_DIR = os.path.join(_BASE_DIR, 'data')
+
+
+def _find_env_file() -> str | None:
+    """定位 .env 配置文件：打包模式优先 exe 同级 config.env，开发模式用 agent/.env。"""
+    if _is_frozen():
+        # 打包模式：exe 同级 config.env
+        exe_dir = os.path.dirname(sys.executable)
+        env_path = os.path.join(exe_dir, 'config.env')
+        if os.path.exists(env_path):
+            return env_path
+        # 兼容：也可能放在数据目录
+        data_env = os.path.join(_DATA_DIR, 'config.env')
+        if os.path.exists(data_env):
+            return data_env
+        return None
+    # 开发模式：agent/.env
+    dev_env = os.path.join(_BASE_DIR, '.env')
+    return dev_env if os.path.exists(dev_env) else None
+
+
+_env_file = _find_env_file()
+if _env_file:
+    load_dotenv(_env_file)
+
+
+# 首次启动时自动创建数据目录与截图子目录（exist_ok 保证幂等）
+os.makedirs(_DATA_DIR, exist_ok=True)
+os.makedirs(os.path.join(_DATA_DIR, 'screenshots'), exist_ok=True)
 
 
 class Config:
@@ -47,10 +96,10 @@ class Config:
     LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')
 
     # ----- 路径 -----
-    # agent/ 根目录（src/config/config.py 上溯三级）
-    BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    # agent/ 根目录（开发模式：src/config/config.py 上溯三级；打包模式：%PROGRAMDATA%\DesktopMonitorAgent）
+    BASE_DIR = _BASE_DIR
     # 数据目录
-    DATA_DIR = os.path.join(BASE_DIR, 'data')
+    DATA_DIR = _DATA_DIR
     # SQLite 数据库文件路径
     DB_PATH = os.path.join(DATA_DIR, 'agent.db')
     # 截图落盘目录

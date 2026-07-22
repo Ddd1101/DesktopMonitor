@@ -7,6 +7,7 @@ import {
   Empty,
   Image,
   Pagination,
+  Popconfirm,
   Row,
   Space,
   Spin,
@@ -23,6 +24,8 @@ import {
   getDevice,
   getDeviceEvents,
   getDeviceScreenshots,
+  restartAgent,
+  updateAgent,
   type ActivityEvent,
   type Device,
   type Screenshot,
@@ -315,6 +318,26 @@ export default function DeviceDetail() {
     connectWs();
   };
 
+  // 下发重启 Agent 指令
+  const handleRestartAgent = async () => {
+    try {
+      await restartAgent(deviceId);
+      message.success('指令已下发');
+    } catch (err) {
+      console.error('下发重启指令失败', err);
+    }
+  };
+
+  // 下发升级 Agent 指令
+  const handleUpdateAgent = async () => {
+    try {
+      await updateAgent(deviceId);
+      message.success('指令已下发');
+    } catch (err) {
+      console.error('下发升级指令失败', err);
+    }
+  };
+
   // 历史截图按 taken_at 分组（同一时刻多屏放同一行，组内按 monitor_index 升序）
   const screenshotGroups = useMemo(() => {
     const groups = new Map<string, Screenshot[]>();
@@ -345,6 +368,23 @@ export default function DeviceDetail() {
             >
               {wsConnected ? '停止实时查看' : '实时查看'}
             </Button>
+            <Popconfirm
+              title="确认下发重启 Agent 指令？"
+              onConfirm={handleRestartAgent}
+              okText="确认"
+              cancelText="取消"
+            >
+              <Button>重启 Agent</Button>
+            </Popconfirm>
+            <Popconfirm
+              title="确认下发升级 Agent 指令？"
+              description="将升级到当前最新版本"
+              onConfirm={handleUpdateAgent}
+              okText="确认"
+              cancelText="取消"
+            >
+              <Button>升级 Agent</Button>
+            </Popconfirm>
             <Button onClick={() => setConfigOpen(true)}>配置</Button>
           </Space>
         }

@@ -13,6 +13,8 @@ const heartbeatSchema = z.object({
   monitor_resolutions: z
     .array(z.object({ width: z.number(), height: z.number() }))
     .optional(),
+  // Agent 版本号，用于服务端推送升级判定
+  agent_version: z.string().optional(),
 });
 
 /**
@@ -37,7 +39,7 @@ export default async function agentHeartbeatRoutes(app: FastifyInstance): Promis
         return;
       }
 
-      const { hostname, ip_address, os_info, monitor_resolutions } = parsed.data;
+      const { hostname, ip_address, os_info, monitor_resolutions, agent_version } = parsed.data;
 
       // 动态拼装 UPDATE 语句，仅更新提供的字段
       // 使用 dayjs 本地时间 + ISO 8601（带 T）格式写入，
@@ -61,6 +63,11 @@ export default async function agentHeartbeatRoutes(app: FastifyInstance): Promis
       if (monitor_resolutions !== undefined) {
         updates.push('monitor_resolutions = ?');
         params.push(JSON.stringify(monitor_resolutions));
+      }
+      // Agent 版本号存入 devices.agent_version
+      if (agent_version !== undefined) {
+        updates.push('agent_version = ?');
+        params.push(agent_version);
       }
 
       params.push(deviceId);

@@ -35,7 +35,28 @@ from src.utils.logger import get_logger
 logger = get_logger('main')
 
 # Agent 版本号
-AGENT_VERSION = '1.0.0'
+def _read_version() -> str:
+    """从打包资源或源码同级读取版本号，回退硬编码 1.0.0。"""
+    import os
+    import sys
+    # PyInstaller 打包模式下，资源在 sys._MEIPASS
+    meipass = getattr(sys, '_MEIPASS', None)
+    candidates = []
+    if meipass:
+        candidates.append(os.path.join(meipass, 'version.txt'))
+    # 源码模式：version.txt 与 main.py 同级（src/）
+    candidates.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'version.txt'))
+    for path in candidates:
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                v = f.read().strip()
+                if v:
+                    return v
+        except (FileNotFoundError, OSError):
+            continue
+    return '1.0.0'
+
+AGENT_VERSION = _read_version()
 
 
 def _mask_token(token: str) -> str:
@@ -92,8 +113,11 @@ class Agent:
         self.window_collector = WindowCollector()
 
         # 4. 初始化上传器（内部会处理 token 失效后的重新注册）
+        # 传入 agent 引用，供 updater 执行更新/重启时调用 agent.stop()
         self.upload_worker = UploadWorker(
-            self.client, screen_collector=self.screen_collector
+            self.client,
+            screen_collector=self.screen_collector,
+            agent=self,
         )
 
     def _ensure_registered(self) -> None:

@@ -7,6 +7,7 @@ import Dashboard from './pages/Dashboard';
 import Devices from './pages/Devices';
 import DeviceDetail from './pages/DeviceDetail';
 import Topology from './pages/Topology';
+import AgentVersions from './pages/AgentVersions';
 
 // 路由表说明：
 // /login                       公开路由
@@ -14,6 +15,8 @@ import Topology from './pages/Topology';
 //   /dashboard                 数据看板
 //   /devices                   设备列表
 //   /devices/:deviceId         设备详情
+//   /topology                  网络拓扑
+//   /agent-versions            Agent 版本管理
 // *                            未匹配路由重定向到 /dashboard
 export const router = createBrowserRouter([
   {
@@ -47,6 +50,10 @@ export const router = createBrowserRouter([
       {
         path: 'topology',
         element: <Topology />,
+      },
+      {
+        path: 'agent-versions',
+        element: <AgentVersions />,
       },
     ],
   },

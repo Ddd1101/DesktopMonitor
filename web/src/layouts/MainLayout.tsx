@@ -1,7 +1,7 @@
 // 全局布局：顶栏 + 侧边菜单 + 内容区
 import { useMemo, useState } from 'react';
 import { Layout, Menu, Button, Space, Typography, message } from 'antd';
-import { DashboardOutlined, DesktopOutlined, LogoutOutlined, ShareAltOutlined } from '@ant-design/icons';
+import { CloudUploadOutlined, DashboardOutlined, DesktopOutlined, LogoutOutlined, ShareAltOutlined } from '@ant-design/icons';
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { clearToken } from '../api/client';
 
@@ -13,6 +13,7 @@ const MENU_ITEMS = [
   { key: '/dashboard', icon: <DashboardOutlined />, label: '数据看板' },
   { key: '/devices', icon: <DesktopOutlined />, label: '设备管理' },
   { key: '/topology', icon: <ShareAltOutlined />, label: '网络拓扑' },
+  { key: '/agent-versions', icon: <CloudUploadOutlined />, label: 'Agent 版本' },
 ];
 
 export default function MainLayout() {

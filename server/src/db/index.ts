@@ -105,16 +105,45 @@ function runMigrations(db: Database.Database): void {
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
+    -- Agent 版本发布表（服务端推送升级用）
+    CREATE TABLE IF NOT EXISTS agent_versions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      version TEXT NOT NULL,
+      file_path TEXT NOT NULL,
+      sha256 TEXT NOT NULL,
+      is_latest INTEGER NOT NULL DEFAULT 0,
+      force INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    -- 设备命令表（服务端向 Agent 下发 restart / update 指令）
+    CREATE TABLE IF NOT EXISTS device_commands (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      device_id TEXT NOT NULL,
+      command TEXT NOT NULL,
+      payload TEXT,
+      status TEXT NOT NULL DEFAULT 'pending',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      executed_at TEXT,
+      FOREIGN KEY (device_id) REFERENCES devices(device_id)
+    );
+
     -- 索引
     CREATE INDEX IF NOT EXISTS idx_events_device_started ON events(device_id, started_at);
     CREATE INDEX IF NOT EXISTS idx_screenshots_device_taken ON screenshots(device_id, taken_at);
     CREATE INDEX IF NOT EXISTS idx_devices_last_heartbeat ON devices(last_heartbeat_at);
+    CREATE INDEX IF NOT EXISTS idx_device_commands_device_status ON device_commands(device_id, status);
+    CREATE INDEX IF NOT EXISTS idx_agent_versions_latest ON agent_versions(is_latest);
   `);
 
   // 兼容旧表迁移：若 devices 缺 monitor_resolutions 列则补上
   const deviceCols = db.prepare("PRAGMA table_info(devices)").all() as { name: string }[];
   if (!deviceCols.some((c) => c.name === 'monitor_resolutions')) {
     db.exec('ALTER TABLE devices ADD COLUMN monitor_resolutions TEXT');
+  }
+  // 兼容旧表迁移：若 devices 缺 agent_version 列则补上
+  if (!deviceCols.some((c) => c.name === 'agent_version')) {
+    db.exec('ALTER TABLE devices ADD COLUMN agent_version TEXT');
   }
 
   // 兼容旧表迁移：若 screenshots 缺 monitor_index 列则补上

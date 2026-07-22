@@ -17,11 +17,13 @@ import adminEventsRoutes from './routes/admin/events.js';
 import adminDashboardRoutes from './routes/admin/dashboard.js';
 import adminConfigRoutes from './routes/admin/config.js';
 import adminTopologyRoutes from './routes/admin/topology.js';
+import adminAgentVersionsRoutes from './routes/admin/agent-versions.js';
 import agentRegisterRoutes from './routes/agent/register.js';
 import agentEventsRoutes from './routes/agent/events.js';
 import agentScreenshotsRoutes from './routes/agent/screenshots.js';
 import agentHeartbeatRoutes from './routes/agent/heartbeat.js';
 import agentConfigRoutes from './routes/agent/config.js';
+import agentCommandsRoutes from './routes/agent/commands.js';
 import monitorWsRoutes from './routes/ws/monitor.js';
 import { startCleanupService } from './services/cleanup.js';
 
@@ -45,10 +47,10 @@ export async function buildApp(): Promise<FastifyInstance> {
     credentials: true,
   });
 
-  // 注册 multipart 插件：用于 Agent 截图上传，限制单文件 10MB
+  // 注册 multipart 插件：用于 Agent 截图上传与版本 exe 上传，限制单文件 100MB（PyInstaller exe 通常 20-50MB）
   await app.register(multipart, {
     limits: {
-      fileSize: 10 * 1024 * 1024, // 10MB
+      fileSize: 100 * 1024 * 1024, // 100MB
     },
   });
 
@@ -78,6 +80,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   app.register(adminDashboardRoutes);
   app.register(adminConfigRoutes);
   app.register(adminTopologyRoutes);
+  app.register(adminAgentVersionsRoutes);
 
   // 注册 Agent 路由
   app.register(agentRegisterRoutes);
@@ -85,6 +88,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   app.register(agentScreenshotsRoutes);
   app.register(agentHeartbeatRoutes);
   app.register(agentConfigRoutes);
+  app.register(agentCommandsRoutes);
 
   // 注册 WebSocket 监控路由（路径已含 /ws 前缀，无需额外 prefix）
   app.register(monitorWsRoutes);

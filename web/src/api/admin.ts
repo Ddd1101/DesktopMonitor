@@ -275,3 +275,74 @@ export async function getTopology(): Promise<TopologyData> {
   const { data } = await apiClient.get<TopologyData>('/admin/topology');
   return data;
 }
+
+// Agent 版本记录
+export interface AgentVersion {
+  id: number;
+  version: string;
+  file_path: string;
+  sha256: string;
+  is_latest: number; // 0 或 1
+  force: number; // 0 或 1
+  created_at: string;
+}
+
+/**
+ * 上传新版本 Agent exe（multipart）
+ */
+export async function uploadAgentVersion(
+  file: File,
+  version: string,
+  force: boolean = false,
+): Promise<AgentVersion> {
+  const formData = new FormData();
+  formData.append('file', file);
+  formData.append('version', version);
+  formData.append('force', force ? '1' : '0');
+  const { data } = await apiClient.post<AgentVersion>(
+    '/admin/agent-versions/upload',
+    formData,
+    {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    },
+  );
+  return data;
+}
+
+/**
+ * 获取版本列表
+ */
+export async function getAgentVersions(): Promise<AgentVersion[]> {
+  const { data } = await apiClient.get<{ items: AgentVersion[] }>(
+    '/admin/agent-versions',
+  );
+  return data.items ?? [];
+}
+
+/**
+ * 设置为 latest
+ */
+export async function setLatestVersion(id: number): Promise<void> {
+  await apiClient.post(`/admin/agent-versions/${id}/set-latest`);
+}
+
+/**
+ * 删除版本
+ */
+export async function deleteAgentVersion(id: number): Promise<void> {
+  await apiClient.delete(`/admin/agent-versions/${id}`);
+}
+
+/**
+ * 下发重启指令
+ */
+export async function restartAgent(deviceId: string): Promise<void> {
+  await apiClient.post(`/admin/devices/${deviceId}/restart`);
+}
+
+/**
+ * 下发升级指令
+ */
+export async function updateAgent(deviceId: string): Promise<void> {
+  await apiClient.post(`/admin/devices/${deviceId}/update`);
+}

@@ -72,6 +72,7 @@ class UploadWorker:
         client: ServerClient,
         interval: Optional[int] = None,
         screen_collector: Optional['ScreenCollector'] = None,
+        agent: Optional['Agent'] = None,
     ) -> None:
         """初始化上传工作线程。
 
@@ -80,10 +81,14 @@ class UploadWorker:
             interval: 上传轮询间隔（秒），已废弃，由 config.UPLOAD_INTERVAL 动态控制
             screen_collector: ScreenCollector 实例引用，用于动态更新采集间隔；
                 为 None 时仅不更新采集间隔
+            agent: Agent 主实例引用，供 updater 执行更新/重启时调用 agent.stop()
+                优雅退出；为 None 时无法执行实际更新/重启
         """
         self.client = client
         # 屏幕采集器引用（用于配置变化时更新采集间隔）
         self._screen_collector = screen_collector
+        # Agent 主实例引用（供 updater 调用 agent.stop()）
+        self.agent = agent
         # 停止信号
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
@@ -366,7 +371,7 @@ class UploadWorker:
             self._re_register()
             return
 
-        # 4. 心跳（每 HEARTBEAT_INTERVAL 秒发一次），成功后拉取远端配置
+        # 4. 心跳（每 HEARTBEAT_INTERVAL 秒发一次），成功后拉取远端配置与命令
         now = time.monotonic()
         if now - self._last_heartbeat >= self.HEARTBEAT_INTERVAL:
             try:
@@ -379,14 +384,20 @@ class UploadWorker:
                 self._last_heartbeat = now
                 # 心跳成功后拉取并应用远端配置（与心跳同频）
                 self._pull_and_apply_remote_config()
+                # 拉取并处理服务端下发的命令
+                self._process_commands()
 
     def _pull_and_apply_remote_config(self) -> None:
         """拉取远端配置并应用：如有变化，同步更新采集间隔。
 
+        服务端响应格式：{ config: {...}, update: {...} | null }
+        - config 字段：远端配置项，交由 config.apply_remote_config 应用
+        - update 字段：非 null 时表示有新版本，触发自动更新流程
+
         拉取失败（除 401 外）静默忽略，下一轮心跳后重试。
         """
         try:
-            remote = self.client.get_remote_config()
+            data = self.client.get_remote_config()
         except TokenExpiredError:
             # token 失效，触发重新注册（下一轮重新拉取）
             logger.info('拉取远端配置时 token 失效，将触发重新注册')
@@ -396,33 +407,131 @@ class UploadWorker:
             logger.error(f'拉取远端配置异常: {e}', exc_info=True)
             return
 
-        if not remote:
+        if not data:
             return
 
-        try:
-            changed = config.apply_remote_config(remote)
-        except Exception as e:
-            logger.error(f'应用远端配置异常: {e}', exc_info=True)
-            return
+        # ----- 应用远端配置 -----
+        remote_config = data.get('config')
+        if remote_config:
+            try:
+                changed = config.apply_remote_config(remote_config)
+            except Exception as e:
+                logger.error(f'应用远端配置异常: {e}', exc_info=True)
+                changed = False
 
-        if not changed:
-            logger.debug('远端配置无变化')
-            return
+            if changed:
+                logger.info(
+                    f'远端配置已应用: quality={config.SCREENSHOT_QUALITY_STEPS} '
+                    f'max_width={config.SCREENSHOT_MAX_WIDTH} '
+                    f'interval={config.SCREENSHOT_INTERVAL}s '
+                    f'upload_interval={config.UPLOAD_INTERVAL}s '
+                    f'batch={config.SCREENSHOT_BATCH}'
+                )
+                # 配置变化时同步更新采集器间隔
+                if self._screen_collector is not None:
+                    try:
+                        self._screen_collector.update_interval(
+                            config.SCREENSHOT_INTERVAL
+                        )
+                    except Exception as e:
+                        logger.error(f'更新采集间隔异常: {e}', exc_info=True)
+            else:
+                logger.debug('远端配置无变化')
 
-        logger.info(
-            f'远端配置已应用: quality={config.SCREENSHOT_QUALITY_STEPS} '
-            f'max_width={config.SCREENSHOT_MAX_WIDTH} '
-            f'interval={config.SCREENSHOT_INTERVAL}s '
-            f'upload_interval={config.UPLOAD_INTERVAL}s '
-            f'batch={config.SCREENSHOT_BATCH}'
+        # ----- 处理自动更新（update 字段非空时触发）-----
+        update_info = data.get('update')
+        if update_info:
+            self._handle_update(update_info)
+
+    def _handle_update(self, update_info: dict) -> None:
+        """处理自动更新流程：版本比较 → 下载 → 校验 → 执行升级。
+
+        Args:
+            update_info: 形如 { latest_version, download_url, sha256, force }
+        """
+        from src.updater import (
+            check_for_update,
+            download_and_verify,
+            perform_update,
         )
 
-        # 配置变化时同步更新采集器间隔
-        if self._screen_collector is not None:
+        try:
+            if not check_for_update(update_info):
+                return
+
+            download_url = update_info.get('download_url')
+            if not download_url:
+                logger.warning('更新信息缺少 download_url，跳过自动更新')
+                return
+
+            # download_url 为相对路径时拼接 base_url
+            if download_url.startswith('/'):
+                download_url = self.client.base_url + download_url
+
+            sha256 = update_info.get('sha256', '')
+            new_exe = download_and_verify(
+                download_url, sha256, self.client._session
+            )
+            # perform_update 在打包模式下会调用 agent.stop() 后 sys.exit(0)
+            # 开发模式下仅打印日志后返回
+            perform_update(new_exe, self.agent)
+        except Exception as e:
+            logger.error(f'自动更新失败: {e}', exc_info=True)
+
+    def _process_commands(self) -> None:
+        """拉取并处理服务端下发的命令。
+
+        支持的命令类型：
+        - restart: 上报 done 后执行重启
+        - update: payload 为 JSON 字符串 { version, sha256, file_path }，
+          上报 done 后执行升级（复用 _handle_update 逻辑）
+        """
+        try:
+            commands = self.client.get_commands()
+        except TokenExpiredError:
+            self._re_register()
+            return
+        except Exception as e:
+            logger.error(f'拉取命令异常: {e}', exc_info=True)
+            return
+
+        for cmd in commands:
+            cmd_id = cmd.get('id')
+            cmd_type = cmd.get('command')
+            payload = cmd.get('payload')
             try:
-                self._screen_collector.update_interval(config.SCREENSHOT_INTERVAL)
+                if cmd_type == 'restart':
+                    # 上报 done 后执行重启
+                    self.client.report_command_done(cmd_id)
+                    from src.updater import perform_restart
+                    logger.info(f'执行重启命令 id={cmd_id}')
+                    # perform_restart 在打包模式下会 sys.exit(0)
+                    # 开发模式下仅打印日志后返回
+                    perform_restart(self.agent)
+                elif cmd_type == 'update':
+                    # payload 是 JSON 字符串
+                    import json
+                    info = json.loads(payload) if payload else {}
+                    # 构造 update_info（与 config 响应的 update 字段对齐）
+                    # payload 中 file_path 即为相对下载路径
+                    update_info = {
+                        'latest_version': info.get('version'),
+                        'download_url': info.get('file_path'),
+                        'sha256': info.get('sha256'),
+                        # 管理员手动触发的升级，强制执行
+                        'force': True,
+                    }
+                    # 上报 done 后执行升级
+                    self.client.report_command_done(cmd_id)
+                    logger.info(f'执行更新命令 id={cmd_id} version={info.get("version")}')
+                    self._handle_update(update_info)
+                else:
+                    logger.warning(f'未知命令类型: {cmd_type} id={cmd_id}')
             except Exception as e:
-                logger.error(f'更新采集间隔异常: {e}', exc_info=True)
+                logger.error(
+                    f'处理命令失败 cmd_id={cmd_id} type={cmd_type}: {e}',
+                    exc_info=True,
+                )
 
     # ----- 文件清理 -----
     def _cleanup_files(self) -> None:
